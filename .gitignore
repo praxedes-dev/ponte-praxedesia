@@ -1,0 +1,16 @@
+node_modules/
+.DS_Store
+*.log
+.claude/
+.gemini/
+Thumbs.db
+
+# Build gerado pelo wxt. Estava versionado e ficava defasado do codigo,
+# porque os commits o excluiam — ler o repo dava uma extensao que nao
+# corresponde ao fonte. Quem precisa do build roda `npm run build`.
+.output/
+.wxt/
+stats.html
+
+# Trava de build entre pedreiros (ver docs/obra-20260904/00-PLANO-DE-OBRA.md §4)
+.obra-lock

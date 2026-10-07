@@ -1,0 +1,24 @@
+{
+  "name": "praxedes-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Ponte MCP entre agentes locais e o Chrome real, via extensao PraxedesIA",
+  "bin": {
+    "praxedes-bridge": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "reload": "node test/reload.js",
+    "test": "node test/todos.js",
+    "test:smoke": "node test/smoke.js",
+    "test:coberta": "node test/janela-coberta.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

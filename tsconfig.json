@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "jsx": "react-jsx",
+    "lib": ["ESNext", "DOM"],
+    "types": ["chrome"],
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    "skipLibCheck": true
+  },
+  "include": ["entrypoints/**/*", "shared/**/*", ".wxt/wxt.d.ts", "env.d.ts"],
+  "exclude": ["node_modules", ".wxt", "dist"]
+}
