@@ -9,7 +9,7 @@ import { executarJs } from './js';
  * EXPIRA a cada lote — cada anexo re-renderiza a lista do Dropzone, e reusar a
  * ref antiga faz `DOM.setFileInputFiles` devolver sucesso SEM anexar nada (o
  * CDP nao erra em no que a pagina ja descartou). Assim sumiram 9 de 47
- * (CLIENTE A) e 4 de 20 (CLIENTE B) documentos em 19/08/2026 — um deles o
+ * (IVONESE) e 4 de 20 (BALBINO) documentos em 19/08/2026 — um deles o
  * documento de identidade do cliente — com "sucesso" reportado em todos.
  *
  * A defesa, na mesma linha de `preencherCampo` (formulario.ts): nao confiar no
@@ -228,7 +228,7 @@ export async function executarUploadLote(
   // NAO se estende a "input multiplo em pagina sem classe de Dropzone": a
   // bateria test/upload-lote.js (Dropzone de mentira, sem .dropzone) mostrou
   // que isso desligaria a conferencia num Dropzone de verdade que nao tenha a
-  // classe — e a conferencia desligada e o incidente CLIENTE A de volta.
+  // classe — e a conferencia desligada e o incidente IVONESE de volta.
   if (!opcoes.seletorItem) {
     const sonda = await executarJs(tabId, `
       (function(){

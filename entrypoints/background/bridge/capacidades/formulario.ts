@@ -185,7 +185,7 @@ export async function digitarTeclaATecla(
       await dm.send(tabId, 'DOM.focus', { backendNodeId });
     } catch (err) {
       // "Element is not focusable" num contenteditable que JA esta com o foco
-      // (campo Nome do WhatsApp, relato de uso 30/09/2026): o foco pedido ja e
+      // (campo Nome do WhatsApp, relato MARCO 30/09/2026): o foco pedido ja e
       // o foco real, entao nao ha risco de as teclas cairem em outro lugar.
       const jaFocado = await dm.send<{ result?: { value?: boolean } }>(tabId, 'Runtime.callFunctionOn', {
         objectId: (await dm.send<{ object?: { objectId?: string } }>(

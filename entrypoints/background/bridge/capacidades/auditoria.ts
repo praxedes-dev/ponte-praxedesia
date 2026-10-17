@@ -52,6 +52,8 @@ function resumoDe(ctx: ContextoCapacidade): string {
 
   if (typeof p.url === 'string') partes.push(`url=${p.url.slice(0, 200)}`);
   if (ctx.ref !== undefined) partes.push(`ref=${ctx.ref}`);
+  // browser_cookies_salvar: o arquivo para onde os cookies foram (nunca os valores).
+  if (typeof p.arquivo === 'string') partes.push(`arquivo=${p.arquivo.slice(0, 200)}`);
   if (typeof p.text === 'string') partes.push(`text=${p.text.slice(0, 60)}`);
   if (typeof p.codigo === 'string') partes.push(`codigo=${p.codigo.slice(0, 120)}`);
   // form_input/type: o VALOR digitado, nunca inteiro — so os 60 primeiros

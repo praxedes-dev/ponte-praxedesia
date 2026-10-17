@@ -16,6 +16,8 @@ import { formatarPagina, procurar } from './format.js';
 import { getToken } from './token.js';
 import { ROTEIRO_TOOL, executarRoteiro } from './roteiro.js';
 import { MIDIA_TOOL, baixarMidia } from './midia.js';
+import { COOKIES_SALVAR_TOOL, salvarCookies } from './cookies-salvar.js';
+import { YOUTUBE_TOOL, transcricaoYoutube } from './youtube.js';
 import { UPLOAD_CLIQUE_TOOL, uploadPorClique } from './upload-clique.js';
 import { FLOW_TOOLS, executarFlow } from './flow.js';
 
@@ -76,6 +78,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     USAR_PERFIL_TOOL,
     { ...ROTEIRO_TOOL, inputSchema: comAba(ROTEIRO_TOOL.inputSchema) },
     { ...MIDIA_TOOL, inputSchema: comAba(MIDIA_TOOL.inputSchema) },
+    { ...COOKIES_SALVAR_TOOL, inputSchema: comAba(COOKIES_SALVAR_TOOL.inputSchema) },
+    { ...YOUTUBE_TOOL, inputSchema: comAba(YOUTUBE_TOOL.inputSchema) },
     { ...UPLOAD_CLIQUE_TOOL, inputSchema: comAba(UPLOAD_CLIQUE_TOOL.inputSchema) },
     ...FLOW_TOOLS.map((t) => ({ ...t, inputSchema: comAba(t.inputSchema) })),
     ...TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema: comAba(inputSchema) })),
@@ -121,6 +125,24 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     try {
       const rel = await uploadPorClique(input, rodarTool, (acao, args, timeout) => link.send(acao, args, timeout));
       return textResult(JSON.stringify(rel));
+    } catch (err) {
+      return errorResult(err.message);
+    }
+  }
+
+  if (name === YOUTUBE_TOOL.name) {
+    try {
+      const rel = await transcricaoYoutube(input, (acao, args, timeout) => link.send(acao, input.aba !== undefined ? { ...args, aba: input.aba } : args, timeout));
+      return textResult(JSON.stringify(rel, null, 1));
+    } catch (err) {
+      return errorResult(err.message);
+    }
+  }
+
+  if (name === COOKIES_SALVAR_TOOL.name) {
+    try {
+      const rel = await salvarCookies(input, (acao, args, timeout) => link.send(acao, input.aba !== undefined ? { ...args, aba: input.aba } : args, timeout));
+      return textResult(JSON.stringify(rel, null, 2));
     } catch (err) {
       return errorResult(err.message);
     }

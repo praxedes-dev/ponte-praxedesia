@@ -70,7 +70,7 @@ compartilhar o que é do usuário.
 5. Registrar nos agentes:
 
 ```bash
-claude mcp add --scope user praxedes-bridge -- node "C:\Users\Cezar\claudecode\PraxedesIA-v5\bridge-server\src\index.js" --name "Claude Code"
+claude mcp add --scope user praxedes-bridge -- node "<pasta-do-projeto>\bridge-server\src\index.js" --name "Claude Code"
 ```
 
 No OpenCode, o bloco equivalente já está em `~/.config/opencode/opencode.jsonc`.

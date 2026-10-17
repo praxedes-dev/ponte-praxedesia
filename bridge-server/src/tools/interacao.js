@@ -161,7 +161,7 @@ export const TOOLS = [
     },
     action: 'press_key',
     // " " (espaco literal) passava sem erro e nao digitava nada: o nome da tecla e "Space"
-    // (relato de uso, 30/09/2026: "39. NOME SOBRENOME" saiu "39.NOMESOBRENOME").
+    // (relato de 30/09/2026: "39. NOME SOBRENOME" saiu "39.NOMESOBRENOME").
     build: (i) => ({ params: { key: i.key === ' ' ? 'Space' : i.key, modifiers: i.modifiers } }),
     timeout: (i) => i.timeout_ms ?? 60_000,
     confirmavel: true,

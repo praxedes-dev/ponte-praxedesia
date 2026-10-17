@@ -187,5 +187,18 @@ export const modulo: ModuloCapacidades = {
       nome: 'cap_cookies',
       executar: async (ctx) => lerCookies(ctx.params.url ?? (await chrome.tabs.get(ctx.tabId)).url!),
     },
+    {
+      // 07/10/2026 (pedido do Estrelinha): os cookies inteiros, no formato cru do
+      // chrome.cookies.getAll, para o bridge-server gravar em ARQUIVO. Quem devolve
+      // ao agente so nomes e quantidade e o bridge-server (browser_cookies_salvar);
+      // esta acao nao tem tool propria e nao entra em roteiro. getAll({url}) ja
+      // limita ao site pedido e aos dominios-pai que valem para ele.
+      nome: 'cap_cookies_completos',
+      executar: async (ctx) => {
+        const url = ctx.params.url as string | undefined;
+        if (!url || !/^https?:\/\//.test(url)) throw new Error('informe a url (http/https) do site');
+        return { cookies: await chrome.cookies.getAll({ url }) };
+      },
+    },
   ],
 };
