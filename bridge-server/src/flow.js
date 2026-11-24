@@ -40,7 +40,8 @@ export const FLOW_TOOLS = [
         projeto: PROJETO,
         ids: { type: 'array', items: { type: 'string' }, description: 'data-media-id das imagens. Sem isto: as mais recentes.' },
         recentes: { type: 'number', description: 'Quantas das mais recentes (sem ids). Padrao 1.' },
-        videos: { type: 'number', description: 'Baixa os N VIDEOS mais recentes do projeto (mp4 no tamanho gerado), em vez de imagens.' },
+        videos: { type: 'number', description: 'Baixa os N VIDEOS mais recentes do projeto (mp4), em vez de imagens.' },
+        tamanho_video: { type: 'string', enum: ['720p', '360p', '270p'], description: 'Com videos: 720p (padrao, Aprimorada: video de 360p sai em 720p), 360p (original) ou 270p (GIF).' },
         tamanho: { type: 'string', enum: ['1K', '2K'], description: 'Padrao 2K (4K e bloqueado no plano Pro).' },
         pasta: { type: 'string', description: 'Onde gravar. Padrao Downloads\\flow.' },
         nomes: { type: 'array', items: { type: 'string' }, description: 'Nome de cada arquivo (sem extensao), na ordem.' },
@@ -75,7 +76,7 @@ export const FLOW_TOOLS = [
         incluir: { type: 'array', items: { type: 'string' }, description: 'Nomes de recursos do projeto a anexar antes.' },
         espera_s: { type: 'number', description: 'Teto de espera da geracao. Padrao 240.' },
         agente: { type: 'boolean', description: 'Liga (true) ou desliga (false) o modo Agente antes de enviar. Sem isto, nao mexe.' },
-        baixar: { type: 'string', enum: ['1K', '2K'], description: 'Ao terminar, ja baixa as midias novas: imagem nesse tamanho, video em mp4 no tamanho gerado.' },
+        baixar: { type: 'string', enum: ['1K', '2K'], description: 'Ao terminar, ja baixa as midias novas: imagem nesse tamanho, video em mp4 720p (ou tamanho_video).' },
         pasta: { type: 'string', description: 'Com baixar: onde gravar. Padrao Downloads\\flow.' },
       },
       required: ['comando'],
@@ -159,28 +160,63 @@ const LISTAR_GRADE = `return Array.from(document.querySelectorAll('img[data-medi
   return {id:i.getAttribute('data-media-id'), y:Math.round(r.y), x:Math.round(r.x)};}).sort(function(a,b){return a.y-b.y||a.x-b.x;})
   .filter(function(v,i,a){return a.findIndex(function(o){return o.id===v.id;})===i;});`;
 
-// 24/11/2026: video nao tem data-media-id na grade nem menu de tamanho. Cada flow-video-tile tem o seu
-// botao "Fazer o download", que baixa o mp4 direto. Ordem da tela = mais recente primeiro.
-async function baixarVideos(ctx, n, pasta, nomes = []) {
+// Abre o "Baixar midia" do editor ja aberto e escolhe o item do menu pelo rotulo ("2K", "720p"...).
+// Sem o rotulo no menu, cai no "Tamanho original"; sem menu (midia enviada), baixa direto.
+// 24/11/2026: marca botao e item VISIVEIS com aria-label proprio e clica pelo no (o menu abre animando;
+// clique por coordenada caia fora) e arma o download com o menu aberto, por 180 s.
+async function baixarNoEditor(ctx, pasta, rotulo) {
+  const btn = await ctx.ate(`var bs=Array.from(document.querySelectorAll('[aria-label="Baixar mídia"],[aria-label="ponte-baixar-midia"]'))
+    .filter(function(e){var r=e.getBoundingClientRect(); return r.width>0 && r.height>0;});
+    if(!bs.length) return null; bs[bs.length-1].setAttribute('aria-label','ponte-baixar-midia'); return true;`, 20_000);
+  if (!btn) throw new Error('o editor nao mostrou o botao "Baixar midia"');
+  await esperar(5000); // a pagina do editor ainda hidrata quando o botao aparece
+  await ctx.tool('browser_click', { ariaLabel: 'ponte-baixar-midia', exato: true });
+  const MARCAR = `var its=Array.from(document.querySelectorAll('[role=menuitem]')).filter(function(e){return e.getBoundingClientRect().width>0;});
+    if(!its.length) return null;
+    var e=its.find(function(e){return (e.innerText||'').split(/\\s+/).indexOf(${JSON.stringify(rotulo)})>=0;})
+      || its.find(function(e){return /original/i.test(e.innerText||'');}); if(!e) return null;
+    e.setAttribute('aria-label','ponte-baixar-item'); return (e.innerText||'').replace(/\\s+/g,' ').trim();`;
+  const item = await ctx.ate(MARCAR, 6000, 300);
+  await ctx.tool('browser_download_arm', { pasta, ttl_s: 180 });
+  if (item) {
+    await esperar(400);
+    await ctx.tool('browser_click', { ariaLabel: 'ponte-baixar-item', exato: true });
+    await esperar(1200); // menu ainda aberto = o clique nao pegou: tenta mais uma vez
+    if (await ctx.js(MARCAR)) await ctx.tool('browser_click', { ariaLabel: 'ponte-baixar-item', exato: true }, false);
+  }
+  const w = await ctx.tool('browser_download_wait', { timeout_ms: 180_000 });
+  let dado; try { dado = JSON.parse(w.texto); } catch { dado = { caminho: w.texto }; }
+  return { item, dado };
+}
+
+function renomear(caminho, nome) {
+  if (!nome || !caminho || !existsSync(caminho)) return caminho;
+  const novo = join(dirname(caminho), `${nome}${extname(caminho)}`);
+  if (existsSync(novo)) return caminho;
+  renameSync(caminho, novo);
+  return novo;
+}
+
+// 24/11/2026: video nao tem data-media-id na grade. Clica no k-esimo flow-video-tile (ordem da tela =
+// mais recente primeiro), pega o id na URL do editor e baixa pelo menu: 270p GIF / 360p original /
+// 720p Aprimorada. Padrao 720p (video gerado em 360p sai aprimorado).
+async function baixarVideos(ctx, uuid, n, pasta, tamanho = '720p', nomes = []) {
   const saida = [];
   for (let k = 0; k < n; k++) {
     try {
-      const ok = await ctx.ate(`var bs=Array.from(document.querySelectorAll('button[aria-label="Fazer o download"],button[aria-label="ponte-baixar-video"]'))
-        .filter(function(b){var c=b; for(var i=0;i<10&&c;i++){ if(c.querySelector&&c.querySelector('flow-video-tile')) return true; c=c.parentElement;} return false;});
-        bs.forEach(function(b){b.setAttribute('aria-label','Fazer o download');});
-        var b=bs[${k}]; if(!b) return null; b.scrollIntoView({block:'center'}); b.setAttribute('aria-label','ponte-baixar-video'); return true;`, 20_000);
-      if (!ok) { saida.push({ video: k + 1, ok: false, erro: 'nao achei o botao de baixar deste video' }); break; }
-      await esperar(600);
-      await ctx.tool('browser_download_arm', { pasta, ttl_s: 180 });
-      await ctx.tool('browser_click', { ariaLabel: 'ponte-baixar-video', exato: true });
-      const w = await ctx.tool('browser_download_wait', { timeout_ms: 180_000 });
-      let dado; try { dado = JSON.parse(w.texto); } catch { dado = { caminho: w.texto }; }
-      let caminho = dado.caminho;
-      if (nomes[k] && caminho && existsSync(caminho)) {
-        const novo = join(dirname(caminho), `${nomes[k]}${extname(caminho)}`);
-        if (!existsSync(novo)) { renameSync(caminho, novo); caminho = novo; }
-      }
-      saida.push({ video: k + 1, ok: true, caminho, bytes: dado.bytes });
+      await ctx.tool('browser_navigate', { url: `${ctx.base}/project/${uuid}` });
+      const ok = await ctx.ate(`var ts=document.querySelectorAll('flow-video-tile'); var t=ts[${k}]; if(!t) return null;
+        t.scrollIntoView({block:'center'}); return true;`, 20_000);
+      if (!ok) { saida.push({ video: k + 1, ok: false, erro: 'o projeto nao tem esse video na grade' }); break; }
+      await esperar(800);
+      // A miniatura nao entra na arvore de acessibilidade: clica no centro dela (nao anima).
+      const c = await ctx.js(`var t=document.querySelectorAll('flow-video-tile')[${k}]; var r=t.getBoundingClientRect();
+        return {x:Math.round(r.x+r.width/2), y:Math.round(r.y+r.height/2)};`);
+      await ctx.tool('browser_click', { x: c.x, y: c.y });
+      const id = await ctx.ate(`var m=location.pathname.match(/\\/edit\\/([0-9a-f-]{36})/); return m ? m[1] : null;`, 15_000);
+      if (!id) throw new Error('o clique no video nao abriu o editor');
+      const { item, dado } = await baixarNoEditor(ctx, pasta, tamanho);
+      saida.push({ video: k + 1, id, ok: true, tamanho: item || 'original', caminho: renomear(dado.caminho, nomes[k]), bytes: dado.bytes });
     } catch (err) {
       saida.push({ video: k + 1, ok: false, erro: String(err.message || err).slice(0, 300) });
     }
@@ -193,7 +229,7 @@ async function baixar(input, ctx) {
   const pasta = input.pasta || join(homedir(), 'Downloads', 'flow');
   const uuid = await abrirProjeto(ctx, input);
   if (Number(input.videos) > 0) {
-    const arquivos = await baixarVideos(ctx, Number(input.videos), pasta, Array.isArray(input.nomes) ? input.nomes : []);
+    const arquivos = await baixarVideos(ctx, uuid, Number(input.videos), pasta, input.tamanho_video || '720p', Array.isArray(input.nomes) ? input.nomes : []);
     return { projeto: uuid, pasta, total: arquivos.length, ok: arquivos.filter((a) => a.ok).length, arquivos };
   }
   let ids = Array.isArray(input.ids) ? input.ids : null;
@@ -208,38 +244,8 @@ async function baixar(input, ctx) {
     const id = ids[i];
     try {
       await ctx.tool('browser_navigate', { url: `${ctx.base}/project/${uuid}/edit/${id}` });
-      // 24/11/2026: pode haver mais de um "Baixar midia" no DOM (um escondido); marca o VISIVEL com
-      // aria-label proprio e clica nele pelo no, nao por coordenada.
-      const btn = await ctx.ate(`var bs=Array.from(document.querySelectorAll('[aria-label="Baixar mídia"],[aria-label="ponte-baixar-midia"]'))
-        .filter(function(e){var r=e.getBoundingClientRect(); return r.width>0 && r.height>0;});
-        if(!bs.length) return null; bs[bs.length-1].setAttribute('aria-label','ponte-baixar-midia'); return true;`, 20_000);
-      if (!btn) throw new Error('o editor nao mostrou o botao "Baixar midia"');
-      await esperar(5000); // a pagina do editor ainda hidrata quando o botao aparece
-      await ctx.tool('browser_click', { ariaLabel: 'ponte-baixar-midia', exato: true });
-      // Imagem gerada abre o menu de tamanho; enviada baixa direto. 24/11/2026: clique por coordenada
-      // caia fora do item (o menu abre animando); agora marca o item com um aria-label proprio e clica
-      // nele pelo no, que a ponte mede na hora do clique.
-      const MARCAR = `var its=Array.from(document.querySelectorAll('[role=menuitem]')).filter(function(e){return e.getBoundingClientRect().width>0;});
-        var e=its.find(function(e){return (e.innerText||'').split(/\\s+/).indexOf(${JSON.stringify(tamanho)})>=0;}); if(!e) return null;
-        e.setAttribute('aria-label','ponte-baixar-${tamanho}'); return true;`;
-      const item = await ctx.ate(MARCAR, 6000, 300);
-      // Armar so agora, com o menu aberto (medido: armado antes do "Baixar midia" nao pegava o 2K).
-      await ctx.tool('browser_download_arm', { pasta, ttl_s: 180 });
-      if (item) {
-        await esperar(400);
-        await ctx.tool('browser_click', { ariaLabel: `ponte-baixar-${tamanho}`, exato: true });
-        // Menu ainda aberto = o clique nao pegou: tenta mais uma vez.
-        await esperar(1200);
-        if (await ctx.js(MARCAR)) await ctx.tool('browser_click', { ariaLabel: `ponte-baixar-${tamanho}`, exato: true }, false);
-      }
-      const w = await ctx.tool('browser_download_wait', { timeout_ms: 180_000 });
-      let dado; try { dado = JSON.parse(w.texto); } catch { dado = { caminho: w.texto }; }
-      let caminho = dado.caminho;
-      if (nomes[i] && caminho && existsSync(caminho)) {
-        const novo = join(dirname(caminho), `${nomes[i]}${extname(caminho)}`);
-        if (!existsSync(novo)) { renameSync(caminho, novo); caminho = novo; }
-      }
-      saida.push({ id, ok: true, tamanho: item ? tamanho : 'original (imagem enviada, sem menu)', caminho, bytes: dado.bytes });
+      const { item, dado } = await baixarNoEditor(ctx, pasta, tamanho);
+      saida.push({ id, ok: true, tamanho: item || 'original (imagem enviada, sem menu)', caminho: renomear(dado.caminho, nomes[i]), bytes: dado.bytes });
     } catch (err) {
       saida.push({ id, ok: false, erro: String(err.message || err).slice(0, 300) });
     }
@@ -365,7 +371,7 @@ async function gerar(input, ctx) {
   const videosNovos = Math.max(0, (Number(await ctx.js(`return document.querySelectorAll('flow-video-tile').length;`)) || 0) - videosAntes);
   let baixados;
   if (input.baixar && novos.length) baixados = (await baixar({ projeto: uuid, ids: novos, tamanho: input.baixar, pasta: input.pasta }, ctx)).arquivos;
-  if (input.baixar && videosNovos) baixados = [...(baixados || []), ...await baixarVideos(ctx, videosNovos, input.pasta || join(homedir(), 'Downloads', 'flow'))];
+  if (input.baixar && videosNovos) baixados = [...(baixados || []), ...await baixarVideos(ctx, uuid, videosNovos, input.pasta || join(homedir(), 'Downloads', 'flow'), input.tamanho_video || '720p')];
   return {
     projeto: uuid, terminou, novos: dims, resposta_do_agente: resposta,
     ...(videosNovos ? { videos_novos: videosNovos } : {}),
