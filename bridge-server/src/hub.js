@@ -206,7 +206,7 @@ export class BridgeLink extends EventEmitter {
     // estiver ligada" — perfil sem extensao falha alto (item 4).
     if (msg.type === 'cmd' && ws.role === 'peer') {
       const perfil = msg.perfil || 'padrao';
-      const ext = this.extensoes.get(perfil);
+      const ext = this.extensaoDo(perfil);
       if (!ext) {
         return ws.send(JSON.stringify({
           type: 'result', id: msg.id, ok: false,
@@ -533,6 +533,17 @@ export class BridgeLink extends EventEmitter {
     return { ...base, perfilAtivo: this.perfilAtivo, ...doHub };
   }
 
+  /**
+   * Extensao que atende o perfil. 24/11/2026: perfil "padrao" (ninguem escolheu) com UMA so extensao
+   * ligada vai para ela, mesmo que o painel tenha outro nome (instalacao nova em que a pessoa preencheu
+   * o campo de perfil). Perfil escolhido pelo nome continua sem cair para outra.
+   */
+  extensaoDo(perfil) {
+    const ext = this.extensoes.get(perfil);
+    if (ext || perfil !== 'padrao' || this.extensoes.size !== 1) return ext;
+    return [...this.extensoes.values()][0];
+  }
+
   /** Executa uma acao no browser (no perfil ativo desta sessao) e devolve o resultado. */
   send(action, args = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
     const id = `${this.clientId}:${++BridgeLink.seq}`;
@@ -547,7 +558,7 @@ export class BridgeLink extends EventEmitter {
     });
 
     if (this.role === 'hub') {
-      const ext = this.extensoes.get(perfil);
+      const ext = this.extensaoDo(perfil);
       if (!ext) {
         return Promise.reject(new Error(
           `extensao do perfil "${perfil}" nao esta conectada — abra o Chrome daquele perfil e confira `

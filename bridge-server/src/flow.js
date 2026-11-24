@@ -74,6 +74,8 @@ export const FLOW_TOOLS = [
         incluir: { type: 'array', items: { type: 'string' }, description: 'Nomes de recursos do projeto a anexar antes.' },
         espera_s: { type: 'number', description: 'Teto de espera da geracao. Padrao 240.' },
         agente: { type: 'boolean', description: 'Liga (true) ou desliga (false) o modo Agente antes de enviar. Sem isto, nao mexe.' },
+        baixar: { type: 'string', enum: ['1K', '2K'], description: 'Ao terminar, ja baixa as midias novas nesse tamanho (mesmo caminho do browser_flow_baixar).' },
+        pasta: { type: 'string', description: 'Com baixar: onde gravar. Padrao Downloads\\flow.' },
       },
       required: ['comando'],
     },
@@ -172,16 +174,30 @@ async function baixar(input, ctx) {
     const id = ids[i];
     try {
       await ctx.tool('browser_navigate', { url: `${ctx.base}/project/${uuid}/edit/${id}` });
-      const btn = await ctx.ate(`var e=document.querySelector('[aria-label="Baixar mídia"]'); if(!e) return null; var r=e.getBoundingClientRect();
-        return r.width ? {x:Math.round(r.x+r.width/2), y:Math.round(r.y+r.height/2)} : null;`, 20_000);
+      // 24/11/2026: pode haver mais de um "Baixar midia" no DOM (um escondido); marca o VISIVEL com
+      // aria-label proprio e clica nele pelo no, nao por coordenada.
+      const btn = await ctx.ate(`var bs=Array.from(document.querySelectorAll('[aria-label="Baixar mídia"],[aria-label="ponte-baixar-midia"]'))
+        .filter(function(e){var r=e.getBoundingClientRect(); return r.width>0 && r.height>0;});
+        if(!bs.length) return null; bs[bs.length-1].setAttribute('aria-label','ponte-baixar-midia'); return true;`, 20_000);
       if (!btn) throw new Error('o editor nao mostrou o botao "Baixar midia"');
-      await ctx.tool('browser_download_arm', { pasta });
-      await ctx.tool('browser_click', { x: btn.x, y: btn.y });
-      // Imagem gerada abre o menu de tamanho; enviada baixa direto.
-      const item = await ctx.ate(`var its=Array.from(document.querySelectorAll('[role=menuitem]')).filter(function(e){return e.getBoundingClientRect().width>0;});
-        var e=its.find(function(e){return (e.innerText||'').indexOf(${JSON.stringify(tamanho)})===0;}); if(!e) return null;
-        var r=e.getBoundingClientRect(); return {x:Math.round(r.x+r.width/2), y:Math.round(r.y+r.height/2)};`, 2500, 300);
-      if (item) await ctx.tool('browser_click', { x: item.x, y: item.y });
+      await esperar(5000); // a pagina do editor ainda hidrata quando o botao aparece
+      await ctx.tool('browser_click', { ariaLabel: 'ponte-baixar-midia', exato: true });
+      // Imagem gerada abre o menu de tamanho; enviada baixa direto. 24/11/2026: clique por coordenada
+      // caia fora do item (o menu abre animando); agora marca o item com um aria-label proprio e clica
+      // nele pelo no, que a ponte mede na hora do clique.
+      const MARCAR = `var its=Array.from(document.querySelectorAll('[role=menuitem]')).filter(function(e){return e.getBoundingClientRect().width>0;});
+        var e=its.find(function(e){return (e.innerText||'').split(/\\s+/).indexOf(${JSON.stringify(tamanho)})>=0;}); if(!e) return null;
+        e.setAttribute('aria-label','ponte-baixar-${tamanho}'); return true;`;
+      const item = await ctx.ate(MARCAR, 6000, 300);
+      // Armar so agora, com o menu aberto (medido: armado antes do "Baixar midia" nao pegava o 2K).
+      await ctx.tool('browser_download_arm', { pasta, ttl_s: 180 });
+      if (item) {
+        await esperar(400);
+        await ctx.tool('browser_click', { ariaLabel: `ponte-baixar-${tamanho}`, exato: true });
+        // Menu ainda aberto = o clique nao pegou: tenta mais uma vez.
+        await esperar(1200);
+        if (await ctx.js(MARCAR)) await ctx.tool('browser_click', { ariaLabel: `ponte-baixar-${tamanho}`, exato: true }, false);
+      }
       const w = await ctx.tool('browser_download_wait', { timeout_ms: 180_000 });
       let dado; try { dado = JSON.parse(w.texto); } catch { dado = { caminho: w.texto }; }
       let caminho = dado.caminho;
@@ -310,8 +326,13 @@ async function gerar(input, ctx) {
   const dims = novos.length ? await ctx.js(`var ids=${JSON.stringify(novos)}; return ids.map(function(id){var i=document.querySelector('img[data-media-id="'+id+'"]');
     return {id:id, w:i&&i.naturalWidth, h:i&&i.naturalHeight, src:i&&i.src};});`) : [];
   const resposta = await ctx.js(`var t=document.body.innerText; var i=t.lastIndexOf('O que você quer criar?'); return (i>0?t.slice(Math.max(0,i-400),i):'').replace(/\\s+/g,' ').trim();`);
+  // Pedido do usuario (24/11/2026): terminou, ja baixa, sem uma chamada por passo.
+  const baixados = input.baixar && novos.length
+    ? (await baixar({ projeto: uuid, ids: novos, tamanho: input.baixar, pasta: input.pasta }, ctx)).arquivos
+    : undefined;
   return {
     projeto: uuid, terminou, novos: dims, resposta_do_agente: resposta,
+    ...(baixados ? { baixados } : {}),
     ...(incluidos ? { incluidos } : {}),
     ...(!novos.length ? { aviso: 'nenhuma midia nova na grade: o agente pode ter respondido com pergunta. Leia resposta_do_agente.' } : {}),
   };
