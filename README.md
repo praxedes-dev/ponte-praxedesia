@@ -49,7 +49,7 @@ Na prática você só fala com o Claude: *"gera no meu projeto do Flow uma arte 
 na mesa, luz da manhã, e baixa em 2K"*.
 
 Para tirar **bom resultado** (prompt, custo de cada modelo, texto sem erro de acento),
-use junto a skill **google-flow**, distribuída à parte.
+use junto a skill **google-flow**, que está na pasta [`skill-google-flow`](skill-google-flow/) (como instalar no LEIA-ME de lá).
 
 Também tem ferramentas de uma chamada para o **Google AI Studio**
 (`browser_aistudio_gerar`, `browser_aistudio_esperar`) e para o site do **Gemini**
