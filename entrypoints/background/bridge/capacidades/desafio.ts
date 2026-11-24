@@ -1,4 +1,5 @@
 import { debuggerManager as dm } from '../../debugger-manager';
+import { avisarEspera } from '../../painel/avisos';
 import type { ContextoCapacidade, ModuloCapacidades, Resultado } from './registro';
 
 /**
@@ -67,8 +68,20 @@ const FUNC_DETECCAO = `
 
     var widget = [];
     if (interstitial.length === 0) {
-      var w = body.querySelector('.g-recaptcha, iframe[src*="recaptcha"], .h-captcha, iframe[src*="hcaptcha"], .cf-turnstile');
-      if (w) widget.push('widget-de-captcha-no-formulario');
+      // So conta captcha que a pessoa ve e resolve. reCAPTCHA invisivel (Flow,
+      // 28/10/2026: selo escondido, iframe size=invisible) nao pede nada a ninguem.
+      var candidatos = body.querySelectorAll('.g-recaptcha, iframe[src*="recaptcha"], .h-captcha, iframe[src*="hcaptcha"], .cf-turnstile');
+      for (var k = 0; k < candidatos.length; k++) {
+        var c = candidatos[k];
+        var src = c.getAttribute('src') || '';
+        if (src.indexOf('size=invisible') !== -1 || c.getAttribute('data-size') === 'invisible') continue;
+        if (c.closest('.grecaptcha-badge')) continue;
+        var r = c.getBoundingClientRect();
+        var vis = c.checkVisibility ? c.checkVisibility({ visibilityProperty: true, opacityProperty: true }) : r.width > 0;
+        if (!vis || r.width < 30 || r.height < 30) continue;
+        widget.push('widget-de-captcha-no-formulario');
+        break;
+      }
     }
 
     return { titulo: titulo, url: location.href, interstitial: interstitial, widget: widget, elementos: elementos };
@@ -137,10 +150,12 @@ async function depois(ctx: ContextoCapacidade, r: Resultado): Promise<Resultado>
   const deteccao = await detectar(ctx.tabId);
 
   if (deteccao.interstitial.length > 0) {
+    void avisarEspera(ctx.tabId, 'captcha para resolver');
     return { ok: false, error: mensagemDeInterstitial(deteccao.url, deteccao.interstitial) };
   }
 
   if (deteccao.widget.length === 0) return r;
+  void avisarEspera(ctx.tabId, 'captcha no formulário para resolver');
 
   const aviso = mensagemDeAviso(deteccao.widget);
 

@@ -87,6 +87,18 @@ async function urlDaAba(tabId: number): Promise<string | null> {
   }
 }
 
+/** Caracteres da resposta crua (string direto; objeto por JSON). Nunca lanca. */
+export function tamanhoBruto(r: Resultado): number {
+  const d = r.ok ? r.data : r.error;
+  if (d === undefined || d === null) return 0;
+  if (typeof d === 'string') return d.length;
+  try {
+    return JSON.stringify(d)?.length ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
 export const modulo: ModuloCapacidades = {
   nome: 'auditoria',
   capacidades: [
@@ -114,6 +126,9 @@ export const modulo: ModuloCapacidades = {
           ok: ev.payload.ok as boolean,
           erro: (ev.payload.erro as string | undefined) ?? undefined,
           ms: ev.payload.ms as number,
+          // MEDICAO: tamanho da resposta CRUA da extensao (a que o servidor MCP ainda vai enxugar).
+          // O tamanho entregue ao agente fica em ~/.praxedes-bridge-v6/medicao.jsonl.
+          chars_brutos: (ev.payload.chars_brutos as number | undefined) ?? undefined,
           // Fora da lista literal do briefing (secao "o que construir", item
           // 4) — mas o proprio criterio de pronto (item 4) exige conferir o
           // resumo do navigate e do click, e so da para conferir o que esta
@@ -159,6 +174,7 @@ export const modulo: ModuloCapacidades = {
           url,
           resumo: resumoDe(ctx),
           ms,
+          chars_brutos: tamanhoBruto(r),
         },
       });
 

@@ -1,5 +1,8 @@
 import type { AgentWorkspace } from '../../../../shared/types';
 import { resolverAlvoDaAcao } from '../../execution-engine';
+import { umQuadro } from '../../execution-engine/cdp-tools';
+import { observarRede } from '../../execution-engine/rede-observada';
+import { esperarCondicao } from '../../execution-engine/espera-condicao';
 import { avaliar } from '../policy';
 import { preencherCampo } from './formulario';
 import type { ModuloCapacidades } from './registro';
@@ -50,6 +53,11 @@ function validarCampos(campos: unknown): CampoLote[] {
   return campos as CampoLote[];
 }
 
+/** Piso sem atividade de rede entre campos (so no modo por condicao, sem `intervalo_ms` explicito). */
+const PISO_ENTRE_CAMPOS_MS = 80;
+/** Teto da espera por AJAX do `change` — depois disso segue, como o tempo fixo de antes seguia. */
+const TETO_AJAX_ENTRE_CAMPOS_MS = 2500;
+
 /**
  * Preenche varios campos em sequencia (NUNCA `Promise.all`: no PJe um `change`
  * pode disparar um ciclo AJAX que re-renderiza o campo seguinte -- aplicar
@@ -70,6 +78,8 @@ export async function preencherLote(
   opts: { pararNoErro?: boolean; intervaloMs?: number } = {},
 ): Promise<RelatorioLote> {
   const pararNoErro = opts.pararNoErro !== false;
+  // `intervalo_ms` explicito = o agente pediu aquele tempo: respeita, fixo. Sem ele, por condicao.
+  const porCondicao = opts.intervaloMs === undefined;
   const intervaloMs = opts.intervaloMs ?? 150;
 
   const resultados: ResultadoCampo[] = [];
@@ -83,6 +93,7 @@ export async function preencherLote(
       continue;
     }
 
+    const rede = porCondicao ? observarRede(tabId) : undefined;
     try {
       // Freio campo a campo (o dispatch de bridge/index.ts NAO chama avaliar()
       // para acoes cap_*): um lote pode ter campo de senha misturado com campos
@@ -116,8 +127,20 @@ export async function preencherLote(
     // so espera se ainda vai tentar outro campo -- nao ha motivo para atrasar
     // a resposta quando o resto ja esta marcado "nao tentado".
     if (!parado && i < campos.length - 1) {
-      await new Promise((r) => setTimeout(r, intervaloMs));
+      if (rede) {
+        // Um quadro (o `change` roda e o framework agenda o AJAX), depois: rede quieta
+        // por PISO ms, e nenhum pedido novo em voo. Teto 150 ms sem AJAX algum (igual
+        // ao tempo fixo de antes); com AJAX, ate TETO_AJAX para ele terminar.
+        await umQuadro(tabId, 50);
+        await esperarCondicao(async () => rede.quieta(PISO_ENTRE_CAMPOS_MS), {
+          intervaloMs: 20,
+          tetoMs: rede.viu() > 0 ? TETO_AJAX_ENTRE_CAMPOS_MS : intervaloMs,
+        });
+      } else {
+        await new Promise((r) => setTimeout(r, intervaloMs));
+      }
     }
+    rede?.parar();
   }
 
   const preenchidos = resultados.filter((r) => r.ok).length;

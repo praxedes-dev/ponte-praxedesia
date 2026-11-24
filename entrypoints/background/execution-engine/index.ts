@@ -1,5 +1,8 @@
 import { lerMolduras } from './molduras';
 import { safeExecuteScript } from './safe-scripting';
+import { aguardarEstavel } from './espera-estavel';
+import { esperarCondicao } from './espera-condicao';
+import { observarRede } from './rede-observada';
 import type { PlannedAction, AgentWorkspace, PageState, ActionTarget } from '../../../shared/types';
 import { debuggerManager } from '../debugger-manager';
 import { workspaceManager } from '../workspace-manager';
@@ -11,9 +14,12 @@ import {
   cdpScroll,
   cdpDrag,
   cdpNavigate,
+  aguardarFocoAssentado,
+  umQuadro,
   resolveTarget,
+  AlvoAmbiguoError,
 } from './cdp-tools';
-import { getPageStructureViaCDP } from './ax-tree';
+import { getPageStructureViaCDP, type OpcoesLeitura } from './ax-tree';
 
 // Reexportado para o freio (`bridge/policy.ts`) poder resolver o MESMO alvo
 // semantico que o motor usa em 'click'/'type' (FURO 2 e FURO 3), sem
@@ -320,6 +326,12 @@ export interface AlvoResolvido {
    * nos testes e de diagnóstico no resultado do motor.
    */
   escritaCaiuNoFoco: boolean;
+  /**
+   * L5: o alvo e um elemento DENTRO de moldura de outro site (ref f<n>:<id>).
+   * O descritor e o efetivo descrevem o elemento real de la de dentro; o freio
+   * tambem julga o host da moldura (banco/meio de pagamento).
+   */
+  moldura?: { host: string; url: string; ref: string };
 }
 
 export type CausaDeNaoResolver =
@@ -332,7 +344,9 @@ export type CausaDeNaoResolver =
   /** O `ref` não existe mais na página — o motor vai falhar pelo MESMO motivo. */
   | 'no-inexistente'
   /** O CDP recusou a conversa (nó vivo, mas não deu para ler). Falha FECHADA. */
-  | 'cdp';
+  | 'cdp'
+  /** `exato:true` achou mais de um elemento com o mesmo nome — recusa em vez de escolher o 1º. */
+  | 'ambiguo';
 
 export type Resolucao =
   | { ok: true; alvo: AlvoResolvido }
@@ -1015,7 +1029,14 @@ export async function resolverAlvoDaAcao(acao: AcaoComAlvo, tabId: number): Prom
     let coords: { x: number; y: number } | null;
     if (origem.tipo === 'semantico') {
       como = 'semantico';
-      coords = await resolveTarget(tabId, origem.target).catch(() => null);
+      try {
+        coords = await resolveTarget(tabId, origem.target);
+      } catch (err) {
+        // `exato:true` com mais de um candidato: recusa e lista (S2). Qualquer
+        // outro erro continua sendo "nao achei", como sempre foi.
+        if (err instanceof AlvoAmbiguoError) return naoResolveu('ambiguo', err.message);
+        coords = null;
+      }
       if (!coords) {
         if (!caiNoFocoSemAlvo) {
           return naoResolveu('alvo-nao-resolvido', `nao achei elemento para ${JSON.stringify(origem.target)}`);
@@ -1045,9 +1066,14 @@ export async function resolverAlvoDaAcao(acao: AcaoComAlvo, tabId: number): Prom
       // fora do documento, elemento abaixo da dobra); qualquer OUTRO erro é o
       // CDP recusando a chamada — os dois falham fechado, mas com causas
       // diferentes, porque quem chama trata cada uma de um jeito.
-      return /no node/i.test(msg)
-        ? naoResolveu('sem-no-no-ponto', `nao ha elemento em (${Math.round(ponto.x)}, ${Math.round(ponto.y)})`)
-        : naoResolveu('cdp', `CDP recusou o hit-test em (${Math.round(ponto.x)}, ${Math.round(ponto.y)}): ${msg}`);
+      if (!/no node/i.test(msg)) {
+        return naoResolveu('cdp', `CDP recusou o hit-test em (${Math.round(ponto.x)}, ${Math.round(ponto.y)}): ${msg}`);
+      }
+      // Depois do scrollIntoView que o resolveTarget faz (elemento abaixo da
+      // dobra), o hit-test do CDP ainda nao enxerga o scroll e responde "No
+      // node" para um ponto que JA esta na viewport. O DOM da propria pagina
+      // enxerga na hora: pergunta a ele quem esta no ponto.
+      noNoPonto = await noNoPontoPeloDom(tabId, ponto);
     }
     if (!noNoPonto) {
       return naoResolveu('sem-no-no-ponto', `nao ha elemento em (${Math.round(ponto.x)}, ${Math.round(ponto.y)})`);
@@ -1066,6 +1092,21 @@ export async function resolverAlvoDaAcao(acao: AcaoComAlvo, tabId: number): Prom
   }
 
   return montarAlvo(acao, tabId, como, backendNodeId, objectId, ponto);
+}
+
+/** Quem esta no ponto, segundo `document.elementFromPoint` (viewport do topo). */
+async function noNoPontoPeloDom(tabId: number, ponto: { x: number; y: number }): Promise<number | undefined> {
+  try {
+    const ev = await dm.send<{ result?: { objectId?: string } }>(tabId, 'Runtime.evaluate', {
+      expression: `document.elementFromPoint(${Math.round(ponto.x)}, ${Math.round(ponto.y)})`,
+    });
+    const oid = ev?.result?.objectId;
+    if (!oid) return undefined;
+    const d = await dm.send<{ node?: { backendNodeId?: number } }>(tabId, 'DOM.describeNode', { objectId: oid });
+    return d?.node?.backendNodeId;
+  } catch {
+    return undefined;
+  }
 }
 
 class ExecutionEngine {
@@ -1093,7 +1134,7 @@ class ExecutionEngine {
     try {
       switch (action.type) {
         case 'read_page': {
-          const res = await getPageStructureViaCDP(tabId);
+          const res = await getPageStructureViaCDP(tabId, (action.params ?? {}) as OpcoesLeitura);
           // Molduras de outro site: elementos com coordenada da tela, sem ref.
           const mold = await lerMolduras(tabId).catch(() => ({ elementos: [], ilegiveis: [] }));
           if (mold.elementos.length || mold.ilegiveis.length) {
@@ -1187,8 +1228,11 @@ class ExecutionEngine {
             await cdpClickByRef(tabId, alvo.backendNodeId);
           }
 
-          // Wait for focus to settle — some editors (CM6/PM) take a tick
-          await new Promise((r) => setTimeout(r, 150));
+          // Wait for focus to settle — some editors (CM6/PM) take a tick.
+          // V1: por CONDICAO (foco no alvo + um quadro + foco ainda no alvo),
+          // com o mesmo teto de 150 ms de antes. Campo que nao recebe o foco do
+          // clique (wrapper de select2) paga o teto e segue, como sempre.
+          await aguardarFocoAssentado(tabId, alvo.efetivo.backendNodeId, 150);
 
           // FURO 7-C: quem recebe o texto e o no EFETIVO (a travessia
           // `findRealInput` ja aplicada na resolucao), nao o no nomeado. Passar
@@ -1247,6 +1291,9 @@ class ExecutionEngine {
 
           // Named positions: scroll to top or bottom of page via JS
           if (position === 'bottom' || position === 'top') {
+            // V1: arma a observacao de rede ANTES de rolar — o lazy-load nasce do scroll.
+            const rede = observarRede(tabId);
+            try {
             await safeExecuteScript({
               target: { tabId },
               func: (pos: string) => {
@@ -1269,8 +1316,29 @@ class ExecutionEngine {
               },
               args: [position],
             });
-            // Brief pause to let scroll settle before next action reads content
-            await new Promise((r) => setTimeout(r, 400));
+            // V1: era 400 ms parados. Agora espera a pagina PARAR: posicao do
+            // rolador do documento, altura e a CONTAGEM de elementos iguais em 3 leituras
+            // seguidas (50 ms) — a contagem pega o lazy-load que cresce a
+            // lista, que so a posicao nao pega. Teto de 400 ms como antes.
+            await umQuadro(tabId, 50);
+            await aguardarEstavel(async () => {
+              const [r] = await safeExecuteScript({
+                target: { tabId },
+                func: () => {
+                  const el = document.scrollingElement || document.documentElement;
+                  return { y: Math.round(el.scrollTop), h: el.scrollHeight, n: document.getElementsByTagName('*').length };
+                },
+              });
+              return r?.result as { y: number; h: number; n: number } | undefined;
+            }, { intervaloMs: 50, tetoMs: 400, leiturasIguais: 3 });
+            // Lazy-load: se a rolagem disparou pedido, a contagem so muda quando ele
+            // VOLTA — espera a rede quietar (teto 1,5 s), em vez de apostar no tempo.
+            if (rede.viu() > 0) {
+              await esperarCondicao(async () => rede.quieta(100), { intervaloMs: 50, tetoMs: 1500 });
+            }
+            } finally {
+              rede.parar();
+            }
             return { success: true };
           }
 
@@ -1490,19 +1558,6 @@ class ExecutionEngine {
 
           // Timed out — still return success so the agent can continue
           return { success: true, data: { contentChanged: lastLength > baseLength, timedOut: true } };
-        }
-
-        case 'get_console_logs': {
-          const maxLogs = (action.params?.max as number | undefined) ?? 50;
-          const [res] = await safeExecuteScript({
-            target: { tabId },
-            func: (max: number) => {
-              const logs = (window as any).__agentConsoleLogs ?? [];
-              return logs.slice(-max);
-            },
-            args: [maxLogs],
-          });
-          return { success: true, data: res?.result ?? [] };
         }
 
         case 'extract': {

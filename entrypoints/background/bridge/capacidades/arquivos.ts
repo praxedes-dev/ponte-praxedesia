@@ -92,7 +92,7 @@ export async function anexarArquivos(
  * Ate 05/09/2026 esta funcao chamava `executarJs` com DOIS argumentos: o
  * terceiro (`emSomenteLeitura`) caia no default `false` e o `fetch(...,
  * {credentials:'include'})` abaixo rodava liso — inclusive na aba do Dr.
- * Cezar, com o cookie de sessao dele — mesmo com o agente em modo leitura.
+ * usuário, com o cookie de sessao dele — mesmo com o agente em modo leitura.
  * Medido por um cetico: `browser_javascript` com o MESMO fetch foi barrado
  * (`[somente leitura]`); `browser_download` nao foi. Ver
  * `bridge-server/test/download-somente-leitura.js`.
@@ -106,7 +106,7 @@ export async function anexarArquivos(
  *    do usuario e ele nao tiver liberado com `permitir_acao: true`. Isto e
  *    suficiente sozinho para fechar o furo, e e o MESMO padrao que toda outra
  *    capacidade de escrita da ponte ja segue (`cap_upload`, `cap_autocomplete`
- *    etc.) — o Dr. Cezar libera do jeito que ja conhece.
+ *    etc.) — o usuário libera do jeito que ja conhece.
  * 2. `emSomenteLeitura` agora e passado adiante para `executarJs`, que liga
  *    `throwOnSideEffect` quando for `true` (mesmo mecanismo da obra 20 para
  *    `cap_js`). Na pratica, com o gate de NOME acima, esta funcao so roda com
@@ -117,7 +117,7 @@ export async function anexarArquivos(
  *    cobre e o que ela NAO cobre (o `EvalError` de efeito colateral).
  *
  * Pratica para quem usa: baixar da aba PROPRIA do agente continua igual, sem
- * pedir nada. Baixar da aba do Dr. Cezar sem ele ter chamado
+ * pedir nada. Baixar da aba do usuário sem ele ter chamado
  * `browser_use_current_tab` com `permitir_acao: true` agora falha com
  * `[somente leitura]` em vez de baixar silenciosamente.
  */

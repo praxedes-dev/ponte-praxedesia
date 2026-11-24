@@ -5,15 +5,22 @@ export const TOOLS = [
     name: 'browser_javascript',
     description:
       'Roda JavaScript na pagina e devolve o retorno. Use para extrair dado preciso, inspecionar '
-      + 'estado ou depurar. Uma expressao ("document.title") ou um corpo de funcao com return. Na '
+      + 'estado ou depurar. Para lista ou tabela, extraia tudo de uma vez retornando o array pronto, '
+      + 'em vez de ler item por item. Devolva so o valor de que precisa (um numero, um array de strings), nao a pagina nem objetos grandes. Uma expressao ("document.title") ou um corpo de funcao com return. Na '
       + 'aba do usuario sem permissao, so passa se for leitura pura — JS com efeito colateral '
       + '(escrever, clicar, navegar, POST) e barrado com [somente leitura]. Com args, codigo e o '
       + 'CORPO de uma funcao (use return) e recebe o array args — passe aqui texto de peticao, '
-      + 'nome com aspas, JSON: nunca interpolado no codigo. Ciclo AJAX longo (PJe): suba timeout_ms.',
+      + 'nome com aspas, JSON: nunca interpolado no codigo. Ciclo AJAX longo (PJe): suba timeout_ms. '
+      + 'FREIO: click()/dispatchEvent(click)/form.submit()/requestSubmit() sobre elemento que diz '
+      + '"excluir", "assinar", "pagar", "protocolar"... (ou qualquer envio em banco/meio de pagamento) '
+      + 'e barrado com [bloqueado] e NAO acontece; so repita com confirm:true depois de perguntar ao usuario. '
+      + 'Leitura e extracao nao sao afetadas.',
     inputSchema: {
       type: 'object',
       properties: {
         codigo: { type: 'string', description: 'Expressao ou corpo de funcao.' },
+        max_chars: { type: 'number', description: 'Teto de caracteres da resposta; passando dele, corta e avisa o tamanho original.' },
+        so_valor: { type: 'boolean', description: 'Devolve apenas o resultado: texto cru se for string, JSON compacto (sem recuo) se for objeto/array.' },
         args: {
           type: 'array',
           items: {},
@@ -42,6 +49,8 @@ export const TOOLS = [
     action: 'cap_js',
     build: (i) => ({ params: { codigo: i.codigo, args: i.args, timeout_ms: i.timeout_ms } }),
     timeout: (i) => (i.timeout_ms ?? 55_000) + 5_000,
+    // S1 (20/10/2026): ganha `confirm` no schema (tools/index.js) -- o guarda de clique do JS.
+    confirmavel: true,
   },
   {
     name: 'browser_javascript_conferir',

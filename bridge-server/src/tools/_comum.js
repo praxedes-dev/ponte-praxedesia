@@ -2,6 +2,14 @@
  * Pecas compartilhadas por mais de um arquivo de tools por dominio.
  */
 
+/** L5: so browser_click e browser_type declaram esta propriedade. */
+export const REF_MOLDURA_PROP = {
+  ref_moldura: {
+    type: 'string',
+    description: 'Ref de elemento DENTRO de moldura (iframe) de outro site, no formato f1:3, como browser_read_page mostra. Vale so aqui; o ref numerico nao serve la dentro.',
+  },
+};
+
 export const SEMANTIC_TARGET_PROPS = {
   ref: {
     type: 'number',
@@ -11,6 +19,13 @@ export const SEMANTIC_TARGET_PROPS = {
   role: { type: 'string', description: 'Papel de acessibilidade (button, link, textbox...).' },
   placeholder: { type: 'string', description: 'Placeholder do campo.' },
   ariaLabel: { type: 'string', description: 'aria-label do elemento.' },
+  exato: {
+    type: 'boolean',
+    description:
+      'Na busca por text/role/placeholder/ariaLabel (sem ref): casa o nome INTEIRO (sem diferenciar maiuscula) '
+      + 'em vez de substring e, se mais de um elemento casar, RECUSA e lista os candidatos em vez de '
+      + 'escolher o primeiro. Use quando houver nomes parecidos ("Assinar" x "Nao assinar"). Padrao: false.',
+  },
 };
 
 /**
@@ -34,10 +49,15 @@ export const SEMANTIC_TARGET_PROPS = {
  * proprio, e ninguem mais confunde os dois.
  */
 export function buildTarget(input) {
+  // L5: ref de elemento dentro de moldura de outro site (f1:3). Estrategia propria: a
+  // extensao desvia para o caminho da moldura (com o mesmo freio) e recusa em outras tools.
+  if (typeof input.ref_moldura === 'string' && input.ref_moldura) {
+    return { strategy: 'moldura-ref', ref: input.ref_moldura };
+  }
   if (input.ref !== undefined) {
     return { strategy: 'agent-id', agentId: input.ref };
   }
-  const { text, role, placeholder, ariaLabel } = input;
+  const { text, role, placeholder, ariaLabel, exato } = input;
   if (text || role || placeholder || ariaLabel) {
     return {
       strategy: 'semantic',
@@ -45,6 +65,7 @@ export function buildTarget(input) {
       ...(role && { role }),
       ...(placeholder && { placeholder }),
       ...(ariaLabel && { ariaLabel }),
+      ...(exato === true && { exato: true }),
     };
   }
   return undefined;

@@ -1,5 +1,13 @@
-import { focoEmMoldura } from '../execution-engine/molduras';
+import { reescreverTypeParaTeclado } from './teclado-hosts';
+import { focoEmMoldura, ehRefMoldura } from '../execution-engine/molduras';
+import {
+  resolverAlvoDeMoldura, cliqueNaMoldura, digitarNaMoldura,
+} from '../execution-engine/moldura-acoes';
 import { workspaceManager } from '../workspace-manager';
+import { atualizarStatus, aplicado as iconeAplicado } from '../painel/status-icone';
+import { rankingDeSites } from '../painel/consumo-sites';
+import { cancelarTodasAsDecisoes, notificacaoDaDecisao, tratarBotao } from '../painel/decisao-runtime';
+import { avisarEspera, registroAvisos, reiniciarAvisos, avisosLigados, notificacoesAtivas, ligarModoTesteDecisao, modoTesteDecisaoLigado } from '../painel/avisos';
 
 import { auditLogger } from '../audit';
 import { debuggerManager } from '../debugger-manager';
@@ -9,6 +17,8 @@ import {
 } from '../execution-engine';
 import { avaliar } from './policy';
 import { lerValorDoElemento } from './capabilities';
+import { esperarCondicao } from '../execution-engine/espera-condicao';
+import { documentoTrocou } from '../execution-engine/refs-documento';
 // Registra todos os modulos de capacidade (e liga os ganchos aoAnexar ao
 // debugger-manager) so de ser importado. Precisa acontecer no carregamento do
 // modulo, nao dentro de `start()`: o service worker MV3 pode acordar sem
@@ -21,7 +31,10 @@ import {
 // nao e uma capacidade nem um gancho do contrato de `registro.ts`, e sim uma
 // funcao proprio de estado do modulo `abas-filhas`, que so o `onCreated` daqui
 // (dono do `openerTabId`) pode chamar. Ver docs/obra-20260904/08-...md.
+import { emulacaoDoAgente } from './capacidades/emulacao';
 import { registrarFilha } from './capacidades/abas-filhas';
+import { ConjuntoSessao } from './conjunto-sessao';
+import { zerarConsumoSites } from '../painel/consumo-sites';
 import type { AgentWorkspace, PlannedAction, ProviderConfig } from '../../../shared/types';
 
 /**
@@ -35,7 +48,7 @@ import type { AgentWorkspace, PlannedAction, ProviderConfig } from '../../../sha
  * nos conectamos nele como cliente.
  */
 
-const BRIDGE_URL = 'ws://127.0.0.1:8788';
+const BRIDGE_URL = 'ws://127.0.0.1:8789';
 
 /** Acoes do MOTOR (ExecutionEngine) que despacham input e por isso exigem a aba renderizada. */
 const INPUT_ACTIONS_MOTOR = new Set(['click', 'type', 'press_key', 'scroll', 'drag']);
@@ -55,7 +68,7 @@ const ACOES_QUE_ALTERAM_MOTOR = new Set([
   //
   // Nao e leitura por dois motivos independentes:
   //   1. sobrescreve a AREA DE TRANSFERENCIA do Windows. E estado da maquina
-  //      do Dr. Cezar, nao da pagina: "olha isso aqui" nao pode apagar o que
+  //      do usuário, nao da pagina: "olha isso aqui" nao pode apagar o que
   //      ele tinha copiado para colar em outro lugar.
   //   2. o fallback do `case 'copy_to_clipboard'` (execution-engine) CRIA um
   //      `<textarea>`, ANEXA em `document.body`, chama `select()` — que rouba
@@ -84,6 +97,7 @@ const ACOES_QUE_ALTERAM_MOTOR = new Set([
  * precisam de `this` (workspaceByClient, abasCriadasPelaPonte...).
  */
 const CAPACIDADES_INTERNAS = [
+  'cap_parar_tudo_admin', 'cap_liberar_admin',
   'cap_faxina_ociosos', 'cap_limpar', 'cap_use_current_tab', 'cap_use_own_tab',
   'cap_tabs_all', 'cap_use_tab', 'cap_janela_propria', 'cap_voltar_aba_corrente', 'cap_listar',
   'cap_entregar_aba', 'cap_fechar_aba_admin',
@@ -116,15 +130,26 @@ function ehPaginaInterna(url: string | undefined): boolean {
 /**
  * O incidente do PJe (11/09/2026): a faxina por ociosidade fechava a aba do
  * agente sem distinguir "abandonou o trabalho" de "terminou e esta esperando
- * o Dr. Cezar assinar". A rede de seguranca (ver `encerrar`, `opts.viaFaxina`)
+ * o usuário assinar". A rede de seguranca (ver `encerrar`, `opts.viaFaxina`)
  * so ENTREGA a aba ao usuario quando ela e "de verdade" — o resto (branco,
  * pagina interna) continua sendo fechado como sempre, senao toda aba de
- * teste (example.com, about:blank) iria parar na janela do Dr. Cezar.
+ * teste (example.com, about:blank) iria parar na janela do usuário.
  */
 function ehPaginaReal(url: string | undefined): boolean {
   if (!url || url === 'about:blank') return false;
   return !ehPaginaInterna(url);
 }
+
+/**
+ * Resposta que o agente recebe quando o usuário aperta "Parar tudo" no painel.
+ * Vale para o comando que estava rodando e, ate ele liberar, para todo comando
+ * novo dos agentes que estavam conectados: erro claro, sem convite a tentar de novo.
+ */
+export const MSG_PARADO = 'parado pelo usuário — não repita; pergunte a ele. '
+  + 'A ponte foi interrompida de propósito: nada seguirá até ele liberar os agentes no painel.';
+
+/** Depois do "Parar tudo", por quanto tempo nenhuma aba nova nasce (comando que ja estava a meio caminho). */
+const PARADA_SEM_ABA_MS = 4_000;
 
 /** Nome do workspace interno. Nao cria grupo de aba nenhum. */
 const NOME_WORKSPACE = 'ponte';
@@ -143,6 +168,17 @@ const OCIOSIDADE_MS = 5 * 60_000;
 const ALARME_FAXINA = 'ponte-faxina-ociosos';
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
+/**
+ * Falhas seguidas (sem nunca abrir) ate desistir do laco de tentativas. Contra a
+ * porta fechada cada tentativa deixa um ERR_CONNECTION_REFUSED em
+ * chrome://extensions; depois disto a extensao so tenta de novo pelo alarme
+ * abaixo (1 vez por minuto), ao abrir o painel lateral ou ao trocar o token.
+ * 5 falhas = ~31 s de tentativas (1+2+4+8+16 s de espera).
+ */
+const FALHAS_ATE_REPOUSO = 5;
+const ALARME_RECONECTAR = 'ponte-reconectar';
+/** Mensagem pequena a cada 20 s no WS aberto: no Chrome 116+ enviar mensagem renova os 30 s do service worker. */
+const KEEPALIVE_WS_MS = 20_000;
 
 /**
  * Quanto o indicador visual fica na tela depois do ultimo comando.
@@ -150,6 +186,14 @@ const RECONNECT_MAX_MS = 30_000;
  * Existe para nao piscar entre dois comandos seguidos (o agente costuma mandar
  * varios em fila). Passou disso sem comando novo, o agente parou de fato.
  */
+/** Hosts em que a janela da ponte fica aberta (sem foco), sem tamanho emulado. */
+const HOSTS_JANELA_REAL = ['https://flow.google.com/', 'https://labs.google/'];
+/** Acoes que so funcionam na aba da FRENTE: uma por vez na janela da ponte (ver `pegarVez`). */
+const ACOES_DA_FRENTE = new Set([
+  'click', 'type', 'press_key', 'drag', 'scroll',
+  'cap_click_xy', 'cap_form_input', 'cap_form_fill', 'cap_digitar', 'cap_autocomplete',
+  'cap_print', 'cap_screenshot_ref', 'screenshot',
+]);
 const INDICADOR_GRACA_MS = 2_000;
 
 /** De quanto em quanto tempo o indicador e reafirmado durante um comando longo. */
@@ -181,23 +225,44 @@ interface BridgeCommand {
   name?: string;
 }
 
+/** Uma linha do "ultimas acoes" do painel lateral. */
+export interface AcaoRecente {
+  quando: number;
+  clientId: string;
+  agente?: string;
+  acao: string;
+  ok: boolean;
+  ms: number;
+  site?: string;
+  erro?: string;
+}
+
+const RECENTES_MAX = 10;
+
 class BridgeClient {
   private ws: WebSocket | null = null;
   private reconnectDelay = RECONNECT_MIN_MS;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
+  /** Falhas seguidas de conexao sem nunca abrir. Zera ao abrir. */
+  private falhasSeguidas = 0;
+  /** Laco de tentativas desligado: so alarme/painel/token tentam. Espelhado em chrome.storage.session. */
+  private repouso = false;
+  /** O hub respondeu welcome sem erro nesta conexao. */
+  private acolhido = false;
+  private keepaliveWs: ReturnType<typeof setInterval> | null = null;
 
   /** Workspace de cada agente conectado: qual aba ele esta usando. */
   private workspaceByClient = new Map<string, string>();
 
   /** Abas que ja eram do usuario: nunca fechar. E o caso normal. */
-  private abasAdotadas = new Set<number>();
+  private abasAdotadas = new ConjuntoSessao('ponteAbasAdotadas');
 
   /**
    * Abas que a PONTE abriu (`browser_tab_open`). Sao as unicas que ela pode
    * fechar — o resto pertence ao usuario.
    */
-  private abasCriadasPelaPonte = new Set<number>();
+  private abasCriadasPelaPonte = new ConjuntoSessao('ponteAbasCriadas', 'local');
 
   /** Ultimo comando de cada agente, para soltar quem parou. */
   private ultimoComando = new Map<string, number>();
@@ -228,11 +293,26 @@ class BridgeClient {
 
   /** Abas com tamanho de tela emulado porque a janela esta minimizada. */
   private emuladas = new Set<number>();
+  /**
+   * Vez na janela da ponte (29/10/2026, sessao Imersos): so a aba da FRENTE recebe
+   * teclado e clique. Com dois agentes, o comando de um trazia a aba dele para a
+   * frente no meio da digitacao do outro; a aba escondida travava o
+   * Input.dispatchKeyEvent (cap_digitar estourava) e congelava. Acao que precisa
+   * da frente espera a vez; leitura nao troca a aba da frente.
+   */
+  private vezDaJanela = new Map<number, Promise<void>>();
+  /**
+   * Aba que o PROPRIO agente fechou (`clientId:tabId`). Nao e "fechada por fora":
+   * o proximo comando dele segue sem o erro de [aba trocou] (01/11/2026).
+   */
+  private fechadasPeloDono = new Set<string>();
+  /** Aba em branco aberta em silencio depois disso; o proximo open_tab a aproveita. */
+  private brancaDoCliente = new Map<string, number>();
 
   /**
-   * So mexe na JANELA DA PONTE (nunca numa janela do Dr. Cezar).
+   * So mexe na JANELA DA PONTE (nunca numa janela do usuário).
    *
-   * O Dr. Cezar quer a ponte SEMPRE minimizada, sem aparecer na tela
+   * O usuário quer a ponte SEMPRE minimizada, sem aparecer na tela
    * (30/09/2026). Minimizada, a janela vira 0x0 e o hit-test nao acha nada.
    * 1o caminho: manter minimizada e EMULAR o tamanho da tela pelo CDP
    * (Emulation.setDeviceMetricsOverride): a pagina ganha layout e o clique
@@ -241,14 +321,79 @@ class BridgeClient {
    * minimizado 20 s depois — menos que os 30 s em que o service worker dorme
    * e levaria o temporizador junto.
    */
-  private async garantirJanelaDesenhada(tabId: number): Promise<void> {
+  private async pegarVez(tabId: number, aguardando?: () => void): Promise<() => void> {
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (!tab) return () => {};
+    const { janelaDaPonte } = await chrome.storage.local.get('janelaDaPonte');
+    if (tab.windowId !== janelaDaPonte) return () => {};
+    const anterior = this.vezDaJanela.get(tab.windowId) ?? Promise.resolve();
+    let soltar!: () => void;
+    const minha = new Promise<void>((r) => { soltar = r; });
+    const fila = anterior.then(() => minha);
+    this.vezDaJanela.set(tab.windowId, fila);
+    // Teto: um comando preso nao segura os outros para sempre.
+    // Enquanto espera, avisa quem mandou: a fila nao conta no prazo do comando.
+    let esperando = true;
+    const aviso = aguardando ? setInterval(() => { if (esperando) aguardando(); }, 5_000) : undefined;
+    await Promise.race([anterior, new Promise((r) => setTimeout(r, 90_000))]);
+    esperando = false;
+    if (aviso) { clearInterval(aviso); aguardando?.(); }
+    return () => {
+      soltar();
+      if (this.vezDaJanela.get(tab.windowId) === fila) this.vezDaJanela.delete(tab.windowId);
+    };
+  }
+
+  private async garantirJanelaDesenhada(tabId: number, ativar = true): Promise<void> {
     try {
+      // O agente pediu um aparelho (browser_emulate_device): a medida dele manda, nao a de 1280x800.
+      if (emulacaoDoAgente.has(tabId)) { this.emuladas.delete(tabId); return; }
       const { janelaDaPonte } = await chrome.storage.local.get('janelaDaPonte');
       const tab = await chrome.tabs.get(tabId);
       if (tab.windowId !== janelaDaPonte) return;
-      const win = await chrome.windows.get(tab.windowId);
+      let win = await chrome.windows.get(tab.windowId);
+
+      // Site com antirrobo (Flow, 08/11/2026): janela minimizada com tamanho
+      // emulado da innerWidth 1280 e outerWidth 157 em screenX -16000, sinal
+      // impossivel para gente de verdade, e a geracao volta "atividade incomum".
+      // Nesses hosts a janela fica NORMAL, sem foco e sem emulacao: tamanho real.
+      if (HOSTS_JANELA_REAL.some((h) => (tab.url ?? '').startsWith(h))) {
+        if (this.emuladas.delete(tabId)) {
+          await debuggerManager.send(tabId, 'Emulation.clearDeviceMetricsOverride', {}).catch(() => {});
+          await debuggerManager.send(tabId, 'Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {});
+        }
+        if (win.state === 'minimized') {
+          await chrome.windows.update(tab.windowId, { state: 'normal', focused: false }).catch(() => {});
+          // A pagina reflui depois de sair do minimizado: medida tirada antes disso
+          // mandava o clique para outro elemento (09/11/2026). Espera a largura parar.
+          let antes = -1;
+          for (let i = 0; i < 20; i++) {
+            await new Promise((r) => setTimeout(r, 100));
+            const r = await debuggerManager.send<{ result?: { value?: number } }>(tabId, 'Runtime.evaluate', {
+              expression: 'innerWidth * 10000 + innerHeight', returnByValue: true,
+            }).catch(() => undefined);
+            const v = Number(r?.result?.value ?? 0);
+            if (v > 0 && v === antes) break;
+            antes = v;
+          }
+        }
+        if (ativar && !tab.active) await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+        return;
+      }
+
+      // Janela aberta mas SEM foco (28/10/2026, sessao Imersos): restaurada e
+      // coberta por outras, o Chrome para de desenhar, o print trava 60 s e o clique
+      // cai no vazio. Sem o usuário olhando para ela, volta ao minimizado e segue
+      // pelo caminho da emulacao, que funciona.
+      if (win.state !== 'minimized' && !win.focused && !this.reMinimizar.has(tab.windowId)) {
+        await chrome.windows.update(tab.windowId, { state: 'minimized' }).catch(() => {});
+        win = await chrome.windows.get(tab.windowId);
+      }
 
       if (win.state !== 'minimized') {
+        // Ele esta olhando a janela: so a aba da frente e desenhada, entao traz a
+        // aba do agente para a frente, como no minimizado.
+        if (ativar && !tab.active) await chrome.tabs.update(tabId, { active: true }).catch(() => {});
         // Janela aberta: a emulacao nao tem mais por que existir.
         if (this.emuladas.delete(tabId)) {
           await debuggerManager.send(tabId, 'Emulation.clearDeviceMetricsOverride', {}).catch(() => {});
@@ -265,15 +410,16 @@ class BridgeClient {
         return r?.result?.value === true;
       };
 
-      if (!tab.active) await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+      if (ativar && !tab.active) await chrome.tabs.update(tabId, { active: true }).catch(() => {});
       await debuggerManager.attach(tabId).catch(() => {});
       await debuggerManager.send(tabId, 'Emulation.setDeviceMetricsOverride', {
         width: 1280, height: 800, deviceScaleFactor: 1, mobile: false,
       }).catch(() => {});
       await debuggerManager.send(tabId, 'Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
       this.emuladas.add(tabId);
-      await new Promise((r) => setTimeout(r, 150));
-      if (await temLayout()) return;
+      // V1: era 150 ms parados antes de conferir uma vez. A conferencia (layout de
+      // verdade + hit-test) passa a ser a propria espera: poll de 30 ms, mesmo teto.
+      if ((await esperarCondicao(temLayout, { intervaloMs: 30, tetoMs: 150 })).ok) return;
 
       // Emulacao nao bastou: restaura sem foco e devolve depois.
       this.emuladas.delete(tabId);
@@ -312,6 +458,20 @@ class BridgeClient {
   /** Obra 17: nome do agente (`cmd.name`, obra 10) por clientId — so para exibir no painel. */
   private nomeDoCliente = new Map<string, string>();
 
+  /** Comandos em andamento, por id. Base do "Parar tudo", do icone laranja e da duracao no painel. */
+  private emVoo = new Map<string, { cmd: BridgeCommand; inicio: number; cancelar: () => void }>();
+  /** Ids de comando cuja resposta ja foi dada pelo "Parar tudo": a resposta tardia do trabalho e descartada. */
+  private cancelados = new Set<string>();
+  /** Agentes parados pelo usuário: todo comando deles falha com MSG_PARADO ate `liberarAgentes()`. */
+  private bloqueados = new Set<string>();
+  private paradoEm = 0;
+  /** Agentes conectados ao hub (o proprio hub incluso), como o hub os informa. */
+  private peersLista: Array<{ clientId: string; name?: string }> = [];
+  /** Pedidos de consumo ao hub aguardando resposta. */
+  private consumoPendente = new Map<string, (dados: unknown) => void>();
+  /** Ultimas acoes de todos os agentes, mais nova primeiro, para o painel. */
+  private recentes: AcaoRecente[] = [];
+
   get online(): boolean {
     return this.ws?.readyState === WebSocket.OPEN;
   }
@@ -321,13 +481,26 @@ class BridgeClient {
 
     // Alarme, e nao setInterval: o service worker MV3 dorme e levaria o timer
     // junto, deixando grupo de agente parado na tela indefinidamente.
-    chrome.alarms.create(ALARME_FAXINA, { periodInMinutes: 1 });
+    // So cria se ainda nao existe: criar de novo a cada acordar do SW adia o
+    // disparo e, com o SW acordando seguido, o alarme nunca chegaria a tocar.
+    void this.garantirAlarme(ALARME_FAXINA);
     chrome.alarms.onAlarm.addListener(async (alarme) => {
+      if (alarme.name === ALARME_RECONECTAR) {
+        // Repouso: 1 tentativa por minuto, sem laco de backoff.
+        this.tentarDeNovo();
+        return;
+      }
       if (alarme.name !== ALARME_FAXINA) return;
       await this.encerrarOciosos();
       // Segunda rede: grupo sem dono, inclusive de antes do service worker dormir.
       await this.limparAbasOrfas();
     });
+
+    // Token colado/trocado no painel: tenta na hora, nao no proximo minuto.
+    chrome.storage.onChanged.addListener((mudancas, area) => {
+      if (area === 'local' && mudancas.bridgeToken) this.tentarDeNovo();
+    });
+    chrome.runtime.onStartup.addListener(() => this.tentarDeNovo());
 
     // O usuario arrasta a janela da ponte uma vez para o canto (ou monitor) que
     // menos incomoda, e ela volta la sempre.
@@ -378,12 +551,93 @@ class BridgeClient {
     // de `chrome.runtime.onMessage` (registrados no MESMO service worker) nao
     // competem pela mesma mensagem. Ver "defeito irmao" no briefing da obra.
     chrome.runtime.onMessage.addListener((msg, _sender, respond) => {
-      if ((msg as { type?: string } | undefined)?.type !== 'PONTE_AGENTES') return;
-      this.estadoDosAgentes().then(respond);
-      return true;
+      const tipo = (msg as { type?: string } | undefined)?.type;
+      if (tipo === 'PONTE_AGENTES') {
+        this.estadoDosAgentes().then(respond);
+        return true;
+      }
+      if (tipo === 'PONTE_PAINEL') {
+        this.montarPainel().then(respond).catch((err) => respond({ erro: String(err) }));
+        return true;
+      }
+      // Botao "Parar tudo" e o "Liberar agentes" que o segue (painel lateral).
+      if (tipo === 'PONTE_PARAR_TUDO') {
+        this.pararTudo().then((r) => respond({ ok: true, ...r })).catch((err) => respond({ ok: false, error: String(err) }));
+        return true;
+      }
+      // Painel lateral aberto: se a ponte esta em repouso, tenta ja.
+      if (tipo === 'PONTE_RECONECTAR') {
+        this.tentarDeNovo();
+        respond({ ok: true, online: this.online, repouso: this.repouso });
+        return;
+      }
+      // Botao "Zerar contadores": servidor arquiva o jsonl, a extensao limpa os dela.
+      if (tipo === 'PONTE_ZERAR_CONTADORES') {
+        this.zerarContadores().then((r) => respond(r)).catch((err) => respond({ ok: false, erro: String(err) }));
+        return true;
+      }
+      if (tipo === 'PONTE_LIBERAR') {
+        this.liberarAgentes().then((n) => respond({ ok: true, liberados: n }));
+        return true;
+      }
     });
 
+    this.aoMudarEstado();
+    await Promise.all([this.abasCriadasPelaPonte.restaurar(), this.abasAdotadas.restaurar(), this.restaurarAncora()]);
+    void this.zeragemInicial();
+    // Em repouso (service worker acordado por outro evento) nao reabre o laco:
+    // quem tenta e o alarme, o painel ou o token.
+    if (await this.lerRepouso()) {
+      this.falhasSeguidas = FALHAS_ATE_REPOUSO - 1;
+      this.repouso = true;
+      await this.garantirAlarme(ALARME_RECONECTAR);
+      return;
+    }
     await this.connect();
+  }
+
+  private async garantirAlarme(nome: string): Promise<void> {
+    try {
+      if (!(await chrome.alarms.get(nome))) {
+        await chrome.alarms.create(nome, { periodInMinutes: 1, delayInMinutes: 1 });
+      }
+    } catch { /* sem alarmes: segue */ }
+  }
+
+  private async lerRepouso(): Promise<boolean> {
+    try {
+      return (await chrome.storage.session.get('ponteRepouso')).ponteRepouso === true;
+    } catch { return false; }
+  }
+
+  private async gravarRepouso(ligado: boolean): Promise<void> {
+    this.repouso = ligado;
+    try {
+      if (ligado) await chrome.storage.session.set({ ponteRepouso: true });
+      else await chrome.storage.session.remove('ponteRepouso');
+    } catch { /* sem storage de sessao: so a memoria */ }
+  }
+
+  private guardarAncora(): void {
+    const v = this.abaAncora;
+    (v === undefined ? chrome.storage.session.remove('ponteAncora') : chrome.storage.session.set({ ponteAncora: v })).catch(() => {});
+  }
+
+  private async restaurarAncora(): Promise<void> {
+    try {
+      const id = (await chrome.storage.session.get('ponteAncora')).ponteAncora;
+      if (typeof id === 'number' && (await this.tabAlive(id))) this.abaAncora = id;
+    } catch { /* idem */ }
+  }
+
+  /** Tentativa explicita (alarme, painel aberto, token novo). Zera o backoff; no repouso faz UMA tentativa. */
+  private tentarDeNovo(): void {
+    if (this.stopped || this.online) return;
+    if (this.ws?.readyState === WebSocket.CONNECTING) return;
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    this.reconnectDelay = RECONNECT_MIN_MS;
+    if (!this.repouso) this.falhasSeguidas = 0;
+    void this.connect();
   }
 
   /**
@@ -471,6 +725,7 @@ class BridgeClient {
 
   stop(): void {
     this.stopped = true;
+    this.pararKeepaliveWs();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.ws?.close(1000, 'parado pelo usuario');
     this.ws = null;
@@ -478,10 +733,13 @@ class BridgeClient {
 
   private async connect(): Promise<void> {
     if (this.stopped || this.online) return;
+    if (this.ws?.readyState === WebSocket.CONNECTING) return;
 
     const token = await this.getToken();
     if (!token) {
       console.warn('[Bridge] sem token de pareamento — cole o token no painel da extensao');
+      // Sem token nao ha o que tentar: repouso direto (o token novo acorda sozinho).
+      this.falhasSeguidas = FALHAS_ATE_REPOUSO;
       return this.scheduleReconnect();
     }
 
@@ -493,11 +751,14 @@ class BridgeClient {
       return this.scheduleReconnect();
     }
     this.ws = ws;
+    let abriu = false;
+    this.acolhido = false;
 
     ws.onopen = async () => {
+      abriu = true;
+      this.iniciarKeepaliveWs(ws);
       const [perfil, instanceId] = await Promise.all([this.getPerfil(), this.getInstanceId()]);
       ws.send(JSON.stringify({ type: 'hello', role: 'extension', token, perfil, instanceId }));
-      this.reconnectDelay = RECONNECT_MIN_MS;
       console.log(`[Bridge] conectada ao hub — perfil "${perfil}"`);
       void this.broadcastStatus(true);
       // Sobra de execucao anterior: aba que a propria ponte abriu e ficou sem dono.
@@ -511,11 +772,22 @@ class BridgeClient {
     };
 
     ws.onclose = () => {
-      this.ws = null;
-      void this.broadcastStatus(false);
-      // Sem hub, ninguem esta no comando: solta os workspaces (a aba do usuario
-      // fica intacta; so aba aberta pela ponte e fechada).
-      void this.encerrarTodos();
+      if (this.ws === ws) this.ws = null;
+      this.pararKeepaliveWs();
+      const foiAcolhido = this.acolhido;
+      this.acolhido = false;
+      if (abriu) {
+        // Havia conexao de verdade: avisa o painel e solta os workspaces (a aba do
+        // usuario fica intacta; so aba aberta pela ponte e fechada). Tentativa que
+        // nunca abriu nao tem nada a soltar nem a avisar.
+        this.peersLista = [];
+        this.aoMudarEstado();
+        void this.broadcastStatus(false);
+        void this.encerrarTodos();
+      }
+      // So conta como conexao boa quem o hub acolheu (welcome sem erro). Token errado
+      // ou perfil em uso abre e fecha na hora: isso e falha, com backoff e repouso.
+      if (!foiAcolhido) this.falhasSeguidas++;
       this.scheduleReconnect();
     };
 
@@ -524,8 +796,38 @@ class BridgeClient {
     };
   }
 
+  /** O hub aceitou o hello: a conexao e de verdade. Zera backoff e falhas e sai do repouso. */
+  private aoAcolher(): void {
+    this.acolhido = true;
+    this.falhasSeguidas = 0;
+    this.reconnectDelay = RECONNECT_MIN_MS;
+    if (this.repouso) {
+      void this.gravarRepouso(false);
+      chrome.alarms.clear(ALARME_RECONECTAR).catch(() => {});
+    }
+  }
+
+  /** Mensagem barata no WS aberto: no Chrome 116+ renova o prazo de 30 s do service worker (substitui o ping do offscreen). */
+  private iniciarKeepaliveWs(ws: WebSocket): void {
+    this.pararKeepaliveWs();
+    this.keepaliveWs = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) ws.send('{"type":"ka"}');
+    }, KEEPALIVE_WS_MS);
+  }
+
+  private pararKeepaliveWs(): void {
+    if (this.keepaliveWs) clearInterval(this.keepaliveWs);
+    this.keepaliveWs = null;
+  }
+
   private scheduleReconnect(): void {
     if (this.stopped || this.reconnectTimer) return;
+    if (this.falhasSeguidas >= FALHAS_ATE_REPOUSO) {
+      if (!this.repouso) console.log('[Bridge] hub fora do ar: paro de insistir, tento 1 vez por minuto');
+      void this.gravarRepouso(true);
+      void this.garantirAlarme(ALARME_RECONECTAR);
+      return;
+    }
     const delay = this.reconnectDelay;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -542,15 +844,15 @@ class BridgeClient {
   /**
    * Nome do perfil que esta extensao apresenta ao hub. `chrome.storage.local`
    * e por PERFIL do Chrome (cada instalacao tem o seu), entao basta ler um
-   * valor gravado pelo Dr. Cezar no painel da extensao. Sem nada salvo, cai
+   * valor gravado pelo usuário no painel da extensao. Sem nada salvo, cai
    * em "padrao" — a instalacao existente (a pessoal) nunca precisa configurar
    * nada para continuar funcionando exatamente como hoje.
    *
    * Por que nao `chrome.identity.getProfileUserInfo`: pede uma permissao nova
    * no manifest so para isto, e devolveria o e-mail da conta Google logada no
-   * Chrome — nem sempre e o dado que o Dr. Cezar quer usar como nome de
+   * Chrome — nem sempre e o dado que o usuário quer usar como nome de
    * perfil (ele pode nao estar logado, ou querer um nome mais claro que o
-   * e-mail, ex.: "escritorio"). Um campo de texto no painel resolve sem
+   * e-mail, ex.: "trabalho"). Um campo de texto no painel resolve sem
    * permissao nova e da controle total do nome a quem vai chamar por ele.
    */
   private async getPerfil(): Promise<string> {
@@ -587,11 +889,134 @@ class BridgeClient {
       // viva). Fica claro no console em vez de reconectar em silencio.
       const erro = (msg as { erro?: string }).erro;
       if (erro) console.warn(`[Bridge] ${erro}`);
+      else this.aoAcolher();
+      return;
+    }
+    if (msg.type === 'peers') {
+      // O hub avisa quem esta conectado a ele (agentes = sessoes de Claude Code, Codex...).
+      const lista = (msg as { agentes?: unknown }).agentes;
+      this.peersLista = Array.isArray(lista) ? lista as Array<{ clientId: string; name?: string }> : [];
+      this.aoMudarEstado();
+      return;
+    }
+    if (msg.type === 'consumo' || msg.type === 'zerar_consumo') {
+      const m = msg as { id?: string; dados?: unknown };
+      const espera = m.id ? this.consumoPendente.get(m.id) : undefined;
+      if (espera) { this.consumoPendente.delete(m.id!); espera(m.dados ?? null); }
       return;
     }
     if (msg.type !== 'cmd') return;
+    await this.comandoRastreado(msg as BridgeCommand);
+  }
 
-    const cmd = msg as BridgeCommand;
+  /**
+   * Porta de entrada de todo comando: barra quem o usuário parou, registra o
+   * comando como "em voo" (icone, painel, "Parar tudo") e o corre contra a
+   * promessa de cancelamento — `pararTudo()` resolve esta e o agente ja recebeu
+   * o erro, mesmo que o trabalho la dentro demore a perceber que as abas sumiram.
+   */
+  private async comandoRastreado(cmd: BridgeCommand): Promise<void> {
+    await this.carregarBloqueio();
+    // USO DE TESTE, como `cap_fechar_aba_admin`: nenhuma tool do servidor MCP as expoe; so o teste
+    // (peer bruto) as chama. Fazem o mesmo que os botoes "Parar tudo" e "Liberar agentes" do painel
+    // lateral, que nao da para clicar de fora. Ficam aqui, antes do portao e sem workspace, para
+    // nao abrir aba nenhuma e para o proprio comando nao ser interrompido pela parada.
+    if (cmd.action === 'cap_parar_tudo_admin') {
+      this.reply(cmd, true, await this.pararTudo(cmd.id));
+      return;
+    }
+    if (cmd.action === 'cap_desanexar_admin') {
+      // So teste (v6.1 b): solta o debugger de UMA aba por fora da ponte, depois de `atraso_ms`, para provar o
+      // retry ao vivo (comando seguinte: "not attached"; comando em voo: "Detached while handling command").
+      // Nao atualiza o estado do DebuggerManager de proposito: e assim que o Chrome faz quando o DevTools toma a sessao.
+      const pa = (cmd.args?.params ?? {}) as { tabId?: number; atraso_ms?: number };
+      if (!Number.isFinite(Number(pa.tabId))) { this.reply(cmd, false, undefined, 'cap_desanexar_admin: tabId invalido.'); return; }
+      if (pa.atraso_ms) await new Promise((r) => setTimeout(r, pa.atraso_ms));
+      await chrome.debugger.detach({ tabId: Number(pa.tabId) }).catch(() => {});
+      this.reply(cmd, true, { desanexou: Number(pa.tabId) });
+      return;
+    }
+    if (cmd.action === 'cap_icone_admin') {
+      // So leitura: o que o status-icone aplicou de verdade e o badge que o Chrome guardou.
+      this.reply(cmd, true, {
+        aplicado: { ...iconeAplicado },
+        badgeLido: await chrome.action.getBadgeText({}),
+        agentesNoHub: this.peersLista.length,
+        comandosEmVoo: this.emVoo.size,
+      });
+      return;
+    }
+    if (cmd.action === 'cap_painel_admin') {
+      this.reply(cmd, true, await this.montarPainel()); // mesma carga que o painel lateral recebe
+      return;
+    }
+    if (cmd.action === 'cap_avisos_admin') {
+      // So leitura (e `reiniciar` para isolar passos do teste): avisos tentados e o que o Chrome tem de ativo.
+      if ((cmd.args?.params as { reiniciar?: boolean } | undefined)?.reiniciar) await reiniciarAvisos();
+      this.reply(cmd, true, {
+        ligados: await avisosLigados(),
+        registro: registroAvisos,
+        ativas: await notificacoesAtivas(),
+      });
+      return;
+    }
+    if (cmd.action === 'cap_decisao_teste_admin') {
+      // So teste (v6.1 f). 'ligar'/'desligar': decisao simulada em host local (nada vai ao Windows). 'negar': aperta o
+      // botao NEGAR / CANCELAR (indice 1) de uma decisao. NAO existe 'aprovar' de proposito: aprovar e clique humano.
+      const pd = (cmd.args?.params ?? {}) as { modo?: string; id?: string };
+      if (pd.modo === 'ligar' || pd.modo === 'desligar') await ligarModoTesteDecisao(pd.modo === 'ligar');
+      else if (pd.modo === 'negar') {
+        const nid = pd.id ? await notificacaoDaDecisao(pd.id) : undefined;
+        if (!nid) { this.reply(cmd, false, undefined, 'cap_decisao_teste_admin: decisao sem notificacao.'); return; }
+        await tratarBotao(nid, 1);
+      } else { this.reply(cmd, false, undefined, 'cap_decisao_teste_admin: modo invalido (ligar, desligar, negar).'); return; }
+      this.reply(cmd, true, { modoTeste: await modoTesteDecisaoLigado() });
+      return;
+    }
+    if (cmd.action === 'cap_liberar_admin') {
+      this.reply(cmd, true, { liberados: await this.liberarAgentes() });
+      return;
+    }
+    if (this.bloqueados.has(cmd.clientId) && cmd.action !== 'bridge_close_workspace') {
+      this.reply(cmd, false, undefined, MSG_PARADO);
+      return;
+    }
+    let cancelar: () => void = () => {};
+    const cancelada = new Promise<void>((resolve) => { cancelar = resolve; });
+    this.emVoo.set(cmd.id, { cmd, inicio: Date.now(), cancelar });
+    this.aoMudarEstado();
+    try {
+      await Promise.race([this.executarComando(cmd), cancelada]);
+    } finally {
+      this.emVoo.delete(cmd.id);
+      this.aoMudarEstado();
+    }
+  }
+
+  /** Gancho de mudanca de estado (agentes conectados, comando em voo). Icone e badge ligam aqui. */
+  private aoMudarEstado(): void {
+    const agentes = this.online ? this.peersLista.length : 0; // `peersLista` ja conta o proprio hub
+    // Subida e imediata; a descida espera 1,2 s sem comando, para uma fila de comandos seguidos
+    // nao fazer o icone piscar entre laranja e cinza. So transicoes reescrevem (status-icone.ts decide).
+    if (this.emVoo.size > 0) {
+      if (this.timerIconeOcioso) { clearTimeout(this.timerIconeOcioso); this.timerIconeOcioso = null; }
+      this.iconeRodando = true;
+      void atualizarStatus(agentes, true);
+      return;
+    }
+    if (this.timerIconeOcioso) clearTimeout(this.timerIconeOcioso);
+    this.timerIconeOcioso = setTimeout(() => {
+      this.timerIconeOcioso = null;
+      this.iconeRodando = this.emVoo.size > 0;
+      void atualizarStatus(this.online ? this.peersLista.length : 0, this.iconeRodando);
+    }, 1_200);
+    void atualizarStatus(agentes, this.iconeRodando);
+  }
+  private timerIconeOcioso: ReturnType<typeof setTimeout> | null = null;
+  private iconeRodando = false;
+
+  private async executarComando(cmdEntrada: BridgeCommand): Promise<void> {
+    let cmd = cmdEntrada;
     this.ultimoComando.set(cmd.clientId, Date.now());
 
     // O agente saiu: fecha as abas dele.
@@ -675,6 +1100,7 @@ class BridgeClient {
     }
 
     let soltarIndicador: (() => void) | null = null;
+    let soltarVez: (() => void) | undefined;
     try {
       const wsDaSessao = await this.resolveWorkspace(cmd.clientId, cmd.name, cmd.action);
 
@@ -683,7 +1109,7 @@ class BridgeClient {
       // tinham o MESMO clientId e caiam na MESMA aba — 7 em paralelo, um
       // navegando enquanto o outro anexava arquivo. Com `aba`, o comando age
       // naquela aba e so nele: a aba "da sessao" nao muda. So vale aba que a
-      // ponte abriu para esta sessao — aba do Dr. Cezar nunca entra por aqui.
+      // ponte abriu para esta sessao — aba do usuário nunca entra por aqui.
       let ws = wsDaSessao;
       let leitura = this.somenteLeitura.has(cmd.clientId);
       const abaPedida = (cmd.args as { aba?: unknown } | undefined)?.aba;
@@ -700,6 +1126,18 @@ class BridgeClient {
         leitura = false;
       }
       soltarIndicador = this.acenderIndicador(ws.activeTabId);
+
+      // V3: host que exige digitacao real (Portal de Assinaturas da OAB) -- o `type`
+      // rapido vira `cap_digitar` aqui, antes do ctx e do freio, para o resto do
+      // caminho (somente leitura, freio de senha, auditoria) ver a acao verdadeira.
+      if (cmd.action === 'type') {
+        const { tecladoHosts } = await chrome.storage.local.get('tecladoHosts');
+        const url = (await chrome.tabs.get(ws.activeTabId).catch(() => null))?.url;
+        const reescrito = reescreverTypeParaTeclado(
+          cmd, url, Array.isArray(tecladoHosts) ? (tecladoHosts as string[]) : undefined,
+        );
+        if (reescrito) cmd = reescrito;
+      }
 
       const ctx: ContextoCapacidade = {
         clientId: cmd.clientId,
@@ -785,10 +1223,21 @@ class BridgeClient {
       // obra 08, medido em 05/09/2026: aba nova nasceu numa janela diferente
       // de `janelaDaPonte`). `abrirAbaPropria()` ja cria no lugar certo e ja
       // marca `abasCriadasPelaPonte` — reusa-la em vez de consertar `addTab`.
+      if (cmd.action === 'navigate') {
+        const recusa = await this.recusaSessaoUnica(cmd.args?.params?.url as string | undefined, ws.activeTabId);
+        if (recusa) { await this.responder(cmd, ctx, { ok: false, error: recusa }); return; }
+      }
+
       if (cmd.action === 'open_tab') {
         try {
           const url = cmd.args?.params?.url as string | undefined;
-          const tab = await this.abrirAbaPropria();
+          const recusa = await this.recusaSessaoUnica(url, ws.activeTabId);
+          if (recusa) { await this.responder(cmd, ctx, { ok: false, error: recusa }); return; }
+          const branca = this.brancaDoCliente.get(cmd.clientId);
+          this.brancaDoCliente.delete(cmd.clientId);
+          const tab = branca !== undefined && branca === ws.activeTabId && await this.tabAlive(branca)
+            ? await chrome.tabs.get(branca)
+            : await this.abrirAbaPropria();
           const novaId = tab.id!;
           if (url) await chrome.tabs.update(novaId, { url });
 
@@ -842,6 +1291,7 @@ class BridgeClient {
           });
           return;
         }
+        this.fechadasPeloDono.add(`${cmd.clientId}:${alvo}`);
         // Alvo e da ponte: cai no caminho normal (motor), que resolve o MESMO
         // alvo pela mesma funcao — nunca mais diverge do que o freio checou.
       }
@@ -850,7 +1300,9 @@ class BridgeClient {
       // a janela vira 0x0, o hit-test responde "nao ha no" para qualquer ponto
       // e o clique cai no vazio — o freio nem tem o que examinar. Minimizar a
       // janela e natural (ela atrapalha), entao quem se ajeita e a ponte.
-      await this.garantirJanelaDesenhada(ws.activeTabId);
+      const daFrente = ACOES_DA_FRENTE.has(cmd.action);
+      if (daFrente) soltarVez = await this.pegarVez(ws.activeTabId, () => this.prorrogar(cmd));
+      await this.garantirJanelaDesenhada(ws.activeTabId, daFrente);
 
       let resultado: Resultado;
       try {
@@ -860,8 +1312,12 @@ class BridgeClient {
           if (g.antes) await g.antes(ctx);
         }
 
-        // Capacidades proprias da ponte, que nao passam pelo ExecutionEngine.
-        if (cmd.action.startsWith('cap_')) {
+        // L5: ref de elemento DENTRO de moldura de outro site (f<n>:<id>). Caminho
+        // proprio, mas com o mesmo freio (avaliar) sobre o botao real de la de dentro.
+        const molduraRef = (cmd.args?.target as { strategy?: string; ref?: string } | undefined);
+        if (molduraRef?.strategy === 'moldura-ref') {
+          resultado = await this.agirNaMoldura(cmd, ws, String(molduraRef.ref ?? ''));
+        } else if (cmd.action.startsWith('cap_')) {
           const dado = await this.comAbaPronta(cmd.action, ws, () => this.executarCapacidade(cmd, ws, ctx));
           resultado = { ok: true, data: dado };
         } else {
@@ -881,6 +1337,16 @@ class BridgeClient {
           // voltaria a resolver sozinho.
           let resolucao: Resolucao | undefined;
           let alvo: AlvoResolvido | undefined;
+          // L4 (fase 4): ref lido em outro documento (a pagina navegou/recarregou) nao e confiavel.
+          if ((cmd.action === 'click' || cmd.action === 'type')
+            && (action.target as { strategy?: string } | undefined)?.strategy === 'agent-id') {
+            const trocou = await documentoTrocou(ws.activeTabId);
+            if (trocou) {
+              resultado = { ok: false, error: `${cmd.action}: ${trocou}` };
+              await this.responder(cmd, ctx, resultado);
+              return;
+            }
+          }
           if (ACOES_COM_ALVO_UNICO.has(cmd.action)) {
             // Fora de `comAbaPronta` DE PROPOSITO: resolver o alvo e leitura
             // (CDP + injecao de script), que funciona com a aba em segundo
@@ -898,9 +1364,13 @@ class BridgeClient {
               // com a mensagem que diz o que fazer, entao passam.
               resultado = {
                 ok: false,
-                error: `[bloqueado] ${cmd.action}: nao consegui identificar com seguranca o elemento `
-                  + `que esta acao vai tocar (${r.motivo}). Releia a pagina com browser_read_page, `
-                  + 'role ate o elemento ficar visivel e repita com uma ref atual.',
+                // S2: `exato:true` com mais de um candidato -- a mensagem do motor ja
+                // lista os candidatos e diz como desempatar.
+                error: r.causa === 'ambiguo'
+                  ? `[bloqueado] ${cmd.action}: ${r.motivo}`
+                  : `[bloqueado] ${cmd.action}: nao consegui identificar com seguranca o elemento `
+                    + `que esta acao vai tocar (${r.motivo}). Releia a pagina com browser_read_page, `
+                    + 'role ate o elemento ficar visivel e repita com uma ref atual.',
               };
               await this.responder(cmd, ctx, resultado);
               return;
@@ -909,6 +1379,7 @@ class BridgeClient {
 
           const veredito = await avaliar(action, ws, cmd.args?.confirm === true, alvo);
           if (!veredito.permitido) {
+            this.avisarSeEspera(ws.activeTabId, veredito, action);
             resultado = { ok: false, error: `[bloqueado] ${veredito.motivo}` };
           } else {
             const result = await this.comAbaPronta(cmd.action, ws, () => executionEngine.run(action, ws, resolucao));
@@ -969,7 +1440,69 @@ class BridgeClient {
       // responder() no caminho principal (achado F4 do cetico, 05/09/2026).
       this.reply(cmd, false, undefined, err instanceof Error ? err.message : String(err));
     } finally {
+      soltarVez?.();
       soltarIndicador?.();
+    }
+  }
+
+  /**
+   * O freio barrou e a saida e o usuário: ou a acao pede a confirmacao dele
+   * (`confirmavel`), ou e campo de senha, que so ele digita. Aviso do Windows nos dois.
+   */
+  private avisarSeEspera(
+    tabId: number, veredito: { confirmavel?: boolean; motivo?: string; decisaoId?: string }, action?: PlannedAction,
+  ): void {
+    // Navegacao barrada (banco): o site que importa e o DESTINO, nao a aba em que o agente esta.
+    let destino: string | undefined;
+    if (action?.type === 'navigate') {
+      try { destino = new URL(String(action.params?.url ?? '')).host || undefined; } catch { /* url invalida */ }
+    }
+    if (veredito.confirmavel) {
+      // v6.1 (f): com decisao aberta o aviso ja saiu, com botoes (policy.avaliar); nao repete.
+      if (!veredito.decisaoId) void avisarEspera(tabId, 'ação barrada pede sua confirmação', destino);
+    } else if (/senha/i.test(veredito.motivo ?? '')) {
+      void avisarEspera(tabId, 'campo de senha: só você pode digitar');
+    }
+  }
+
+  /**
+   * L5: clique/digitacao por ref de moldura de outro site. O alvo vira um
+   * `AlvoResolvido` com o descritor do elemento real, passa por `avaliar` (texto
+   * destrutivo, senha/cartao, host financeiro da moldura e da aba) e so entao age.
+   */
+  private async agirNaMoldura(cmd: BridgeCommand, ws: AgentWorkspace, ref: string): Promise<Resultado> {
+    const acao = cmd.action;
+    if (acao !== 'click' && acao !== 'type' && acao !== 'cap_digitar') {
+      return { ok: false, error: `${acao}: ref de moldura (${ref}) so vale em browser_click e browser_type.` };
+    }
+    if (!ehRefMoldura(ref)) {
+      return { ok: false, error: `${acao}: ref de moldura invalido (${JSON.stringify(ref)}); o formato e f<n>:<id>, como a leitura mostra.` };
+    }
+    const tabId = ws.activeTabId;
+    const r = await resolverAlvoDeMoldura(tabId, ref);
+    if (!r.ok) return { ok: false, error: `${acao}: ${r.erro}` };
+    const action = { type: acao, target: undefined, params: cmd.args?.params } as unknown as PlannedAction;
+    const veredito = await avaliar(action, ws, cmd.args?.confirm === true, r.alvo);
+    if (!veredito.permitido) {
+      this.avisarSeEspera(tabId, veredito);
+      return { ok: false, error: `[bloqueado] ${veredito.motivo}` };
+    }
+    try {
+      const dado = await this.comAbaPronta(acao, ws, async () => {
+        if (acao === 'click') {
+          const p = await cliqueNaMoldura(tabId, r.entrada);
+          return { element: ref, moldura: r.entrada.host, ponto: p };
+        }
+        const params = (cmd.args?.params ?? {}) as { text?: string; clear?: boolean; delay_ms?: number };
+        if (typeof params.text !== 'string') throw new Error('type: sem texto para digitar');
+        const out = await digitarNaMoldura(tabId, r.entrada, params.text, {
+          limpar: params.clear === true, modo: acao === 'cap_digitar' ? 'teclado' : 'rapido', delayMs: params.delay_ms,
+        });
+        return { typeOutcome: 'moldura', element: ref, moldura: r.entrada.host, lido: out.lido };
+      });
+      return { ok: true, data: dado };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -1000,7 +1533,124 @@ class BridgeClient {
     });
     if (cmd.name) this.nomeDoCliente.set(cmd.clientId, cmd.name);
 
+    if (!this.cancelados.has(cmd.id)) {
+      const voo = this.emVoo.get(cmd.id);
+      this.registrarRecente(cmd, r.ok, voo ? Date.now() - voo.inicio : 0, r.error, await this.siteDaAba(ctx.tabId));
+    }
     this.reply(cmd, r.ok, r.ok ? r.data : undefined, r.error);
+  }
+
+  /** Acrescenta ao "ultimas acoes" do painel (so as 10 mais novas). Nunca lanca. */
+  private registrarRecente(cmd: BridgeCommand, ok: boolean, ms: number, erro?: string, site?: string): void {
+    // Cliente de teste nao entra no "Ultimas acoes".
+    if (/^(teste-|sonda)/i.test(cmd.name ?? this.nomeDoCliente.get(cmd.clientId) ?? '')) return;
+    this.recentes.unshift({
+      quando: Date.now(),
+      clientId: cmd.clientId,
+      agente: cmd.name ?? this.nomeDoCliente.get(cmd.clientId),
+      acao: cmd.action,
+      ok,
+      ms,
+      ...(site ? { site } : {}),
+      ...(erro ? { erro: erro.slice(0, 160) } : {}),
+    });
+    if (this.recentes.length > RECENTES_MAX) this.recentes.length = RECENTES_MAX;
+  }
+
+  /** Host da aba (nunca a URL inteira), ou undefined se a aba ja nao existe. */
+  private async siteDaAba(tabId: number): Promise<string | undefined> {
+    try {
+      const url = (await chrome.tabs.get(tabId)).url;
+      return url ? new URL(url).host || undefined : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Zeragem unica (21/10/2026, pedido do usuário): os numeros dos testes da v6 saem do
+   * painel para ele ver so uso real daqui em diante. Roda uma vez por instalacao (flag em
+   * storage.local) e usa o mesmo caminho do botao, menos o arquivo do servidor.
+   */
+  private async zeragemInicial(): Promise<void> {
+    try {
+      const FLAG = 'zeragemContadores';
+      if ((await chrome.storage.local.get(FLAG))[FLAG] === '20261021') return;
+      await new Promise((r) => setTimeout(r, 1500)); // deixa o IndexedDB da auditoria abrir
+      this.recentes.length = 0;
+      await zerarConsumoSites();
+      await auditLogger.limpar();
+      await chrome.storage.local.set({ [FLAG]: '20261021' });
+    } catch { /* tenta de novo na proxima partida */ }
+  }
+
+  /**
+   * Zera o que o painel mostra: ultimas acoes, ranking de sites e auditoria (chars_brutos)
+   * aqui na extensao, e pede ao hub para arquivar o medicao.jsonl. Nao toca em token,
+   * tecladoHosts, avisos, estado de parada nem nas demais configuracoes.
+   */
+  private async zerarContadores(): Promise<Record<string, unknown>> {
+    this.recentes.length = 0;
+    this.ultimaAcao.clear();
+    await zerarConsumoSites();
+    await auditLogger.limpar().catch(() => {});
+    const servidor = await this.pedirConsumo('zerar_consumo');
+    return { ok: true, servidor };
+  }
+
+  /** Pede ao hub o consumo agregado de medicao.jsonl. null se o hub nao responder em 3 s. */
+  private pedirConsumo(tipo: 'consumo' | 'zerar_consumo' = 'consumo'): Promise<unknown | null> {
+    if (!this.online) return Promise.resolve(null);
+    const id = `consumo:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => { this.consumoPendente.delete(id); resolve(null); }, 3_000);
+      this.consumoPendente.set(id, (dados) => { clearTimeout(timer); resolve(dados); });
+      this.ws!.send(JSON.stringify({ type: tipo, id }));
+    });
+  }
+
+  /**
+   * Tudo que o painel lateral mostra, numa carga so: agentes conectados, ultimas 10
+   * acoes, consumo e opcoes. `consumo.servidor` e o que a ponte devolveu aos agentes
+   * (medicao.jsonl); `consumo.sites` e o ranking por site, da propria extensao.
+   */
+  private async montarPainel(): Promise<Record<string, unknown>> {
+    const base = await this.estadoDosAgentes();
+    const conhecidos = new Map<string, { clientId: string; nome?: string }>();
+    for (const p of this.peersLista) conhecidos.set(p.clientId, { clientId: p.clientId, nome: p.name });
+    for (const a of base.agentes) {
+      if (!conhecidos.has(a.clientId)) conhecidos.set(a.clientId, { clientId: a.clientId, nome: a.nome });
+    }
+    const porId = new Map(base.agentes.map((a) => [a.clientId, a]));
+    const agentes = [...conhecidos.values()].map((c) => {
+      const a = porId.get(c.clientId);
+      let site: string | undefined;
+      try { site = a?.url ? new URL(a.url).host || undefined : undefined; } catch { /* url interna */ }
+      return {
+        clientId: c.clientId,
+        nome: c.nome ?? a?.nome ?? c.clientId,
+        tabId: a?.tabId,
+        titulo: a?.titulo,
+        site,
+        modo: a?.modo,
+        ultimoComandoEm: a?.ultimoComandoEm,
+        ultimaAcao: a?.ultimaAcao,
+        bloqueado: this.bloqueados.has(c.clientId),
+      };
+    });
+    const [servidor, sites, avisos] = await Promise.all([
+      this.pedirConsumo(), rankingDeSites(7, 5), avisosLigados(),
+    ]);
+    return {
+      extensaoOnline: this.online,
+      janelaDaPonte: base.janelaDaPonte,
+      bloqueados: this.bloqueados.size,
+      agentes,
+      recentes: this.recentes,
+      consumo: { servidor, sites },
+      avisosLigados: avisos,
+      geradoEm: Date.now(),
+    };
   }
 
   /**
@@ -1025,6 +1675,8 @@ class BridgeClient {
     }>;
     janelaDaPonte?: number;
     extensaoOnline: boolean;
+    /** Agentes parados pelo "Parar tudo" que ainda nao foram liberados. */
+    bloqueados: number;
   }> {
     const agentes = await Promise.all(
       [...this.workspaceByClient.entries()].map(async ([clientId, workspaceId]) => {
@@ -1044,7 +1696,7 @@ class BridgeClient {
       }),
     );
     const { janelaDaPonte } = await chrome.storage.local.get('janelaDaPonte');
-    return { agentes, janelaDaPonte, extensaoOnline: this.online };
+    return { agentes, janelaDaPonte, extensaoOnline: this.online, bloqueados: this.bloqueados.size };
   }
 
   /**
@@ -1092,8 +1744,28 @@ class BridgeClient {
     chrome.tabs.sendMessage(tabId, { type: 'HIDE_AGENT_INDICATORS' }).catch(() => {});
   }
 
+  /**
+   * Site de sessao unica (01/11/2026): a segunda aba do WhatsApp Web derruba a do
+   * usuário. Abrir ou navegar ate ele com outra aba ja aberta e recusado,
+   * apontando a aba existente.
+   */
+  private async recusaSessaoUnica(url: string | undefined, abaAtual: number): Promise<string | null> {
+    if (!url || !/^https:\/\/web\.whatsapp\.com(\/|$)/.test(url)) return null;
+    const aberta = (await chrome.tabs.query({ url: 'https://web.whatsapp.com/*' })).find((t) => t.id !== abaAtual);
+    if (aberta?.id === undefined) return null;
+    return `[sessao unica] o WhatsApp Web ja esta aberto na aba ${aberta.id}, e uma segunda aba `
+      + `derrubaria essa. Use browser_use_tab com tabId ${aberta.id}.`;
+  }
+
+  private prorrogar(cmd: BridgeCommand): void {
+    if (!this.online) return;
+    this.ws!.send(JSON.stringify({ type: 'prorrogar', id: cmd.id, clientId: cmd.clientId }));
+  }
+
   private reply(cmd: BridgeCommand, ok: boolean, result?: unknown, error?: string): void {
     if (!this.online) return;
+    // O "Parar tudo" ja respondeu a este comando: o trabalho que sobrou nao tem mais a quem falar.
+    if (this.cancelados.delete(cmd.id)) return;
     this.ws!.send(JSON.stringify({
       type: 'result',
       id: cmd.id,
@@ -1151,7 +1823,35 @@ class BridgeClient {
       // tentativas que pegaram a corrida). Consertado la, na ordem das duas
       // chamadas; nao aqui, que so obedece ao registro.
       this.somenteLeitura.delete(clientId);
-      const novo = await this.criarWorkspace(clientId);
+      // Abas irmas vivas (03/11/2026): subagentes da mesma sessao dividem o
+      // workspace. Trocar de workspace abandonava as abas deles, que a faxina de
+      // orfas fechava no meio do trabalho. Com irma viva, a aba nova entra no MESMO.
+      const irmas = ws ? (await Promise.all(Object.keys(ws.tabs).map(Number)
+        .filter((id) => id !== abaMorta).map(async (id) => ((await this.tabAlive(id)) ? id : null))))
+        .filter((id): id is number => id !== null) : [];
+      let novo: AgentWorkspace;
+      if (ws && irmas.length) {
+        const tab = await this.abrirAbaPropria();
+        const tabs = { ...ws.tabs };
+        if (abaMorta !== undefined) delete tabs[abaMorta];
+        tabs[tab.id!] = {
+          tabId: tab.id!, windowId: tab.windowId, groupId: tab.groupId,
+          url: tab.url ?? 'about:blank', isActive: true, lastObservedAt: Date.now(),
+        };
+        workspaceManager.update(ws.workspaceId, { tabs });
+        workspaceManager.switchActiveTab(ws.workspaceId, tab.id!);
+        this.workspaceByClient.set(clientId, ws.workspaceId);
+        this.abaPropriaDoCliente.set(clientId, tab.id!);
+        novo = workspaceManager.get(ws.workspaceId)!;
+        novo.activeTabId = tab.id!;
+      } else {
+        novo = await this.criarWorkspace(clientId);
+      }
+
+      if (this.fechadasPeloDono.delete(`${clientId}:${abaMorta}`)) {
+        this.brancaDoCliente.set(clientId, novo.activeTabId);
+        return novo;
+      }
 
       // Obra 23 (docs/obra-20260904/... correcao 3 do pedreiro de 05/09/2026):
       // relatar defeito e o momento em que o agente MAIS precisa da ferramenta —
@@ -1187,6 +1887,7 @@ class BridgeClient {
 
   /** Aba nova para um agente, dentro da janela da ponte. */
   private async abrirAbaPropria(): Promise<chrome.tabs.Tab> {
+    if (this.paradoEm && Date.now() - this.paradoEm < PARADA_SEM_ABA_MS) throw new Error(MSG_PARADO);
     const windowId = await this.janelaDaPonte();
     const tab = await chrome.tabs.create({ windowId, url: 'about:blank', active: true });
     if (tab.id === undefined) throw new Error('nao consegui abrir aba para o agente');
@@ -1234,7 +1935,7 @@ class BridgeClient {
       ...(comPosicao && b?.top !== undefined && { top: b.top }),
     });
     let janela: chrome.windows.Window | undefined;
-    // O Dr. Cezar quer a ponte SEMPRE minimizada (30/09/2026): nasce assim, sem
+    // O usuário quer a ponte SEMPRE minimizada (30/09/2026): nasce assim, sem
     // abrir na tela nem piscar. Funciona porque `garantirJanelaDesenhada` da
     // layout a pagina por emulacao. So se o Chrome recusar nascer minimizada e
     // que cai no jeito antigo (abre com foco e devolve).
@@ -1243,6 +1944,7 @@ class BridgeClient {
       if (janela?.id !== undefined) {
         await chrome.storage.local.set({ janelaDaPonte: janela.id });
         this.abaAncora = janela.tabs?.[0]?.id;
+        this.guardarAncora();
         return janela.id;
       }
     } catch (err) {
@@ -1259,6 +1961,7 @@ class BridgeClient {
 
     await chrome.storage.local.set({ janelaDaPonte: janela.id });
     this.abaAncora = janela.tabs?.[0]?.id;
+    this.guardarAncora();
 
     // Devolve o foco para onde o usuario estava. `focused: true` foi so para pintar.
     if (focoAnterior !== undefined && focoAnterior !== janela.id) {
@@ -1473,7 +2176,7 @@ class BridgeClient {
         return this.executarCapacidade({ ...cmd, action: 'cap_use_current_tab' }, ws, ctx);
 
       // Incidente do PJe (11/09/2026): agente terminou tarefa que fica
-      // esperando o Dr. Cezar (assinar, conferir, decidir) e chama isto ANTES
+      // esperando o usuário (assinar, conferir, decidir) e chama isto ANTES
       // de ficar 5 min sem mandar comando — senao a faxina por ociosidade
       // fecharia a aba com o cadastro pronto. Ver `entregarTabAoUsuario`.
       case 'cap_entregar_aba': {
@@ -1524,7 +2227,7 @@ class BridgeClient {
           mensagemNova = ` Abri uma aba propria nova (${nova.id}) para voce continuar.`;
         }
 
-        return `aba ${alvo} entregue ao Dr. Cezar — saiu do meu controle, nenhuma faxina fecha ela `
+        return `aba ${alvo} entregue ao usuário — saiu do meu controle, nenhuma faxina fecha ela `
           + `mais. Esta ativa na janela ${windowId}.${mensagemNova}`;
       }
 
@@ -1532,7 +2235,7 @@ class BridgeClient {
       // um agente normal saberia chamar (so existe em `bridge-server/test/`).
       // Fecha QUALQUER tabId, sem checar dono, para o teste de
       // `browser_entregar_aba` conseguir limpar a aba que entregou "ao Dr.
-      // Cezar" (uma aba de teste de verdade) sem deixar lixo na janela dele.
+      // usuário" (uma aba de teste de verdade) sem deixar lixo na janela dele.
       // Ver docs/obra-20260904 (obra "entregar aba", 11/09/2026).
       case 'cap_fechar_aba_admin': {
         const alvo = Number(p.tabId);
@@ -1711,14 +2414,14 @@ class BridgeClient {
    * workspace`, `encerrarTodos`): fecha somente as abas que a ponte abriu, como
    * sempre. E o caminho que os testes usam para limpar — se ele passasse a
    * entregar, toda aba de teste (example.com etc.) iria parar na janela do
-   * Dr. Cezar.
+   * usuário.
    *
    * `opts.viaFaxina: true` (SO a faxina por ociosidade, `encerrarOciosos`): e
    * a rede de seguranca do incidente do PJe — agente parou porque TERMINOU e
-   * esta esperando o Dr. Cezar (assinar, conferir, decidir), nao porque
+   * esta esperando o usuário (assinar, conferir, decidir), nao porque
    * abandonou. Cada aba propria que tiver pagina DE VERDADE (`ehPaginaReal`)
    * e ENTREGUE em vez de fechada; aba em branco ou pagina interna continua
-   * sendo fechada, porque nao ha nada para o Dr. Cezar achar nela.
+   * sendo fechada, porque nao ha nada para o usuário achar nela.
    */
   private async encerrar(clientId: string, opts?: { viaFaxina?: boolean }): Promise<void> {
     this.somenteLeitura.delete(clientId);
@@ -1749,6 +2452,103 @@ class BridgeClient {
       this.abasCriadasPelaPonte.delete(id);
       await chrome.tabs.remove(id).catch(() => {});
     }
+  }
+
+  /**
+   * "Parar tudo" (botao do painel). Em ordem: (1) bloqueia os agentes conhecidos,
+   * para ninguem recomecar; (2) responde MSG_PARADO a todo comando em andamento
+   * e solta quem esperava; (3) fecha as abas que a PONTE abriu (a aba do usuario
+   * nunca e fechada) e desliga o debugger, inclusive das abas adotadas; (4) uma
+   * segunda varredura logo depois, para o que estava a meio caminho de abrir aba.
+   * A aba ancora da janela da ponte fica: e uma aba vazia, e fechar a ultima
+   * aba derrubaria a janela inteira.
+   */
+  async pararTudo(exceto?: string): Promise<{
+    interrompidos: number; abasFechadas: number; debuggersSoltos: number; agentesBloqueados: string[];
+  }> {
+    this.paradoEm = Date.now();
+    if (this.cancelados.size > 200) this.cancelados.clear();
+    // v6.1 (f): nenhuma decisao pendente sobrevive, nem aprovacao solta valendo.
+    void cancelarTodasAsDecisoes().catch(() => {});
+
+    const emAndamento = [...this.emVoo.values()].filter((e) => e.cmd.id !== exceto);
+    const ids = new Set<string>([
+      ...this.workspaceByClient.keys(),
+      ...this.peersLista.map((p) => p.clientId),
+      ...emAndamento.map((e) => e.cmd.clientId),
+    ]);
+    for (const id of ids) this.bloqueados.add(id);
+    await chrome.storage.local.set({ paradoPeloDr: { desde: this.paradoEm, ids: [...this.bloqueados] } }).catch(() => {});
+
+    for (const e of emAndamento) {
+      this.cancelados.add(e.cmd.id);
+      if (this.online) {
+        this.ws!.send(JSON.stringify({
+          type: 'result', id: e.cmd.id, clientId: e.cmd.clientId, ok: false, error: MSG_PARADO,
+        }));
+      }
+      this.registrarRecente(e.cmd, false, Date.now() - e.inicio, 'parado pelo usuário');
+      e.cancelar();
+    }
+
+    const candidatas = [...this.abasCriadasPelaPonte].filter((id) => id !== this.abaAncora);
+    this.filaInput = Promise.resolve();
+    // Debugger primeiro: com ele solto, o que sobrou do trabalho nao tem mais CDP para usar.
+    // (Fechar a aba antes derrubaria a sessao sozinha e o numero sairia zerado.)
+    const debuggersSoltos = await debuggerManager.detachAll();
+    this.emuladas.clear();
+    await this.encerrarTodos();
+    await this.limparAbasOrfas();
+
+    let abasFechadas = 0;
+    for (const id of candidatas) if (!(await this.tabAlive(id))) abasFechadas++;
+
+    setTimeout(() => {
+      void (async () => {
+        await this.encerrarTodos();
+        await this.limparAbasOrfas();
+        await debuggerManager.detachAll();
+        this.aoMudarEstado();
+      })();
+    }, 1500);
+
+    this.aoMudarEstado();
+    return {
+      interrompidos: emAndamento.length,
+      abasFechadas,
+      debuggersSoltos,
+      agentesBloqueados: [...this.bloqueados].map((id) => this.nomeDoCliente.get(id)
+        ?? this.peersLista.find((p) => p.clientId === id)?.name ?? id),
+    };
+  }
+
+  /** O usuário liberou os agentes depois de um "Parar tudo". */
+  async liberarAgentes(): Promise<number> {
+    await this.carregarBloqueio();
+    const n = this.bloqueados.size;
+    this.bloqueados.clear();
+    this.paradoEm = 0;
+    await chrome.storage.local.remove('paradoPeloDr').catch(() => {});
+    return n;
+  }
+
+  /**
+   * A lista de agentes parados sobrevive ao service worker dormir e a `bridge_reload`
+   * (que o proprio agente parado poderia tentar): fica em chrome.storage.local, e some
+   * em 24 h ou quando o usuário libera.
+   */
+  private bloqueioCarregado: Promise<void> | null = null;
+  private carregarBloqueio(): Promise<void> {
+    this.bloqueioCarregado ??= (async () => {
+      try {
+        const { paradoPeloDr } = await chrome.storage.local.get('paradoPeloDr');
+        const p = paradoPeloDr as { desde?: number; ids?: string[] } | undefined;
+        if (p?.desde && Date.now() - p.desde < 24 * 3_600_000 && Array.isArray(p.ids)) {
+          for (const id of p.ids) this.bloqueados.add(id);
+        }
+      } catch { /* sem storage: segue so com a memoria */ }
+    })();
+    return this.bloqueioCarregado;
   }
 
   private async encerrarTodos(): Promise<void> {

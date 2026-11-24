@@ -129,6 +129,19 @@ class AuditLogger {
    * `payload.clientId` porque nao existe indice por clientId (cada agente
    * tem seu proprio `workspaceId`, que muda entre sessoes).
    */
+  /** Apaga todos os eventos (botao "Zerar contadores"). */
+  async limpar(): Promise<void> {
+    this.fila = [];
+    if (!this.db) return;
+    const db = this.db;
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      tx.objectStore(STORE_NAME).clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    });
+  }
+
   async listarRecentes(limite = 50, filtro?: { clientId?: string }): Promise<AuditEvent[]> {
     if (!this.db) return [];
     const db = this.db;

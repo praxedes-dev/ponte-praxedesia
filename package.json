@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "wxt",
     "build": "wxt build",
+    "build:seguro": "node scripts/build-seguro.mjs",
     "zip": "wxt zip",
     "compile": "tsc --noEmit"
   },

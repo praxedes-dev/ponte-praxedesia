@@ -3,7 +3,7 @@ import { executarJs } from './js';
 import { avaliarEmTodas } from '../../execution-engine/molduras';
 
 /**
- * Baixar midia da pagina (26/09/2026, pedido do Dr. Cezar: "o motor dessas
+ * Baixar midia da pagina (26/09/2026, pedido do usuário: "o motor dessas
  * extensoes de baixar do Behance/Instagram/YouTube dentro do nosso MCP").
  *
  * A extensao so faz o que so ela alcanca: o endereco da aba, os cookies
@@ -144,7 +144,7 @@ export const modulo: ModuloCapacidades = {
     {
       // Grava texto/HTML de um trecho da pagina direto no disco (26/09/2026,
       // sessao Storytelling: o Gemini barra fetch de blob:, e usar a area de
-      // transferencia disputava o Ctrl+C do Dr. Cezar). O conteudo nao passa
+      // transferencia disputava o Ctrl+C do usuário). O conteudo nao passa
       // pela conversa do agente: o servidor grava e devolve so o tamanho.
       nome: 'cap_salvar_texto',
       async executar(ctx) {

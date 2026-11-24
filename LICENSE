@@ -1,148 +1,21 @@
-LICENÇA DE VISUALIZAÇÃO — TODOS OS DIREITOS RESERVADOS
-SOURCE-AVAILABLE VIEWING LICENSE — ALL RIGHTS RESERVED
+MIT License
 
-Copyright (c) 2026 Cezar Praxedes de Carvalho Filho. Todos os direitos reservados.
-Copyright (c) 2026 Cezar Praxedes de Carvalho Filho. All rights reserved.
+Copyright (c) 2026 Cezar Praxedes
 
-Este software ("Software") NÃO é software livre nem de código aberto.
-O código está visível apenas para que possa ser lido e avaliado. Visível
-não significa liberado.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-This software (the "Software") is NOT free software and NOT open source.
-The source code is visible only so that it can be read and evaluated.
-Visible does not mean licensed.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-======================================================================
-PORTUGUÊS (prevalece em caso de divergência)
-======================================================================
-
-1. O QUE É PERMITIDO (e somente isto)
-
-   a) Ler e examinar o código-fonte neste repositório, para fins de
-      avaliação pessoal ou profissional (por exemplo, por quem analisa
-      uma candidatura ou uma parceria com o titular).
-   b) Fazer o que os Termos de Serviço do GitHub já permitem a qualquer
-      usuário do GitHub sobre um repositório público (visualizar e criar
-      "fork" pela própria funcionalidade do GitHub), nos limites
-      estritos dessa funcionalidade. Isso decorre dos Termos de Serviço
-      do GitHub, não é uma licença adicional concedida por este
-      arquivo, e não autoriza nada além do que lá está escrito.
-   c) Os usos que a lei brasileira garante sem autorização do titular
-      e que não podem ser afastados por contrato, como a citação
-      parcial do programa para fins didáticos, com identificação do
-      programa e do titular (art. 6º, II, da Lei 9.609/1998).
-
-2. O QUE É PROIBIDO SEM AUTORIZAÇÃO ESCRITA, PRÉVIA E EXPRESSA
-
-   Todo o resto. Em especial, é proibido: executar, instalar ou
-   implantar o Software ou qualquer parte dele, para qualquer fim
-   (comercial, pessoal, acadêmico, de teste ou interno); copiar,
-   reproduzir ou redistribuir; modificar, adaptar ou criar obras
-   derivadas; sublicenciar, vender, alugar ou oferecer como serviço;
-   remover avisos de titularidade; usar o código, ou trechos dele, para
-   treinar, ajustar ou avaliar modelos de inteligência artificial, ou
-   para construir produto ou serviço concorrente; fazer engenharia
-   reversa para reproduzir o Software; e raspar ("scraping") este
-   repositório de forma automatizada em massa.
-
-3. NENHUMA OUTRA LICENÇA
-
-   Nada neste repositório, em seu histórico, em sua documentação ou na
-   sua publicação concede licença de uso, de patente, de marca ou de
-   qualquer outro direito, por implicação ou de outro modo. A
-   utilização do Software depende de autorização prévia e expressa do
-   titular (art. 29 da Lei 9.610/1998) e de contrato de licença (art. 9º
-   da Lei 9.609/1998). Para pedir autorização, entre em contato com o
-   titular pelo e-mail contato@praxedes.xyz.
-
-4. DADOS E MARCAS
-
-   Nomes, logotipos, personagens e identidade visual contidos neste
-   repositório (inclusive "Estrelinha", "Estrelinho", "PraxedesIA" e
-   "Praxedes") não são licenciados. Pessoas e empresas que apareçam em
-   exemplos ou testes são fictícias ou meramente ilustrativas.
-
-5. VIOLAÇÃO
-
-   O uso fora do que o item 1 permite é infração aos direitos autorais
-   do titular e sujeita o infrator às medidas civis e penais cabíveis.
-
-6. SEM GARANTIA
-
-   O Software é fornecido "NO ESTADO EM QUE SE ENCONTRA", sem garantia
-   de qualquer espécie. Na máxima extensão permitida em lei, o titular
-   não responde por danos decorrentes da leitura ou de qualquer outro
-   uso do Software.
-
-7. FORO
-
-   Aplica-se a lei brasileira. Fica eleito o foro da Comarca de
-   Ji-Paraná, Estado de Rondônia, ressalvadas as regras de competência
-   que a lei declarar inderrogáveis.
-
-======================================================================
-ENGLISH (courtesy translation; the Portuguese text prevails)
-======================================================================
-
-1. WHAT IS ALLOWED (and only this)
-
-   a) Reading and examining the source code in this repository, for
-      personal or professional evaluation (for example, by someone
-      reviewing an application or a partnership with the owner).
-   b) Doing what the GitHub Terms of Service already allow any GitHub
-      user to do with a public repository (view it and fork it through
-      GitHub's own functionality), strictly within the limits of that
-      functionality. That right comes from the GitHub Terms of Service,
-      is not an additional license granted by this file, and does not
-      authorize anything beyond what those terms say.
-   c) Uses that Brazilian law guarantees without the owner's permission
-      and that cannot be waived by contract, such as partial quotation
-      of the program for teaching purposes, identifying the program and
-      the owner (Art. 6, II, Brazilian Law 9,609/1998).
-
-2. WHAT IS PROHIBITED WITHOUT PRIOR, EXPRESS, WRITTEN PERMISSION
-
-   Everything else. In particular, you may not: run, install or deploy
-   the Software or any part of it, for any purpose (commercial,
-   personal, academic, testing or internal); copy, reproduce or
-   redistribute it; modify, adapt or create derivative works;
-   sublicense, sell, rent or offer it as a service; remove ownership
-   notices; use the code, or parts of it, to train, fine-tune or
-   evaluate artificial intelligence models, or to build a competing
-   product or service; reverse engineer it in order to reproduce it;
-   or scrape this repository in bulk by automated means.
-
-3. NO OTHER LICENSE
-
-   Nothing in this repository, its history, its documentation or the
-   fact of its publication grants any license to use, any patent
-   license, any trademark license or any other right, by implication or
-   otherwise. Use of the Software requires the owner's prior and
-   express authorization (Art. 29, Brazilian Law 9,610/1998) and a
-   license agreement (Art. 9, Brazilian Law 9,609/1998). To request
-   permission, contact the owner at contato@praxedes.xyz.
-
-4. DATA AND MARKS
-
-   Names, logos, characters and visual identity found in this
-   repository (including "Estrelinha", "Estrelinho", "PraxedesIA" and
-   "Praxedes") are not licensed. People and companies appearing in
-   examples or tests are fictitious or merely illustrative.
-
-5. INFRINGEMENT
-
-   Use outside what Section 1 allows infringes the owner's copyright
-   and exposes the infringer to the applicable civil and criminal
-   remedies.
-
-6. NO WARRANTY
-
-   The Software is provided "AS IS", without warranty of any kind. To
-   the fullest extent permitted by law, the owner is not liable for
-   any damages arising from reading or otherwise using the Software.
-
-7. VENUE
-
-   Brazilian law applies. The courts of the District of Ji-Paraná,
-   State of Rondônia, are chosen as venue, except where the law makes
-   other venue rules mandatory.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

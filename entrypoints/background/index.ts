@@ -3,6 +3,8 @@ import { bridgeClient } from './bridge';
 import { auditLogger } from './audit';
 import { debuggerManager } from './debugger-manager';
 import { tabGroupManager } from './tab-group-manager';
+import { iniciarAvisos } from './painel/avisos';
+import { iniciarDecisoes } from './painel/decisao-runtime';
 
 /** Marca no titulo do grupo — mesma marca usada pela ponte (ver bridge/index.ts). */
 const PREFIXO_GRUPO_PONTE = '🤖 ';
@@ -12,14 +14,15 @@ type IncomingMessage =
   | { type: 'LIST_WORKSPACES' }
   | { type: 'GET_AUDIT_LOG'; workspaceId: string }
   | { type: 'SW_KEEPALIVE' }
-  | { type: 'STOP_AGENT'; fromTabId?: number | 'CURRENT_TAB' }
   | { type: 'PLAY_NOTIFICATION_SOUND'; audioUrl?: string; volume?: number }
   | { type: 'SIDEPANEL_CLOSING' }
   | { type: 'LIMPAR_GRUPOS' };
 
 // ═══════════════════════════════════════════════════════════════════════
-// OFFSCREEN DOCUMENT SETUP (SW Keepalive + GIF + Audio)
+// OFFSCREEN DOCUMENT (so para tocar som, criado sob demanda)
 // ═══════════════════════════════════════════════════════════════════════
+// Nao serve de keepalive: o WebSocket aberto com o hub (mensagem a cada 20 s,
+// ver bridge/index.ts) ja mantem o service worker vivo.
 async function setupOffscreenDocument(): Promise<void> {
   const existingContexts = await (chrome.runtime as any).getContexts?.({
     contextTypes: ['OFFSCREEN_DOCUMENT'],
@@ -29,10 +32,9 @@ async function setupOffscreenDocument(): Promise<void> {
   try {
     await chrome.offscreen.createDocument({
       url: chrome.runtime.getURL('offscreen.html'),
-      reasons: [chrome.offscreen.Reason.BLOBS],
-      justification: 'Keep service worker alive, play sounds, and generate GIFs',
+      reasons: [chrome.offscreen.Reason.AUDIO_PLAYBACK],
+      justification: 'Tocar o som de aviso de inicio e fim de tarefa',
     });
-    console.log('[Background] Offscreen document created');
   } catch (err) {
     console.warn('[Background] Offscreen document setup:', err);
   }
@@ -90,6 +92,7 @@ export async function playNotificationSound(when: NotificationTiming): Promise<v
       audioUrl = custom.dataUrl;
     }
 
+    await setupOffscreenDocument();
     chrome.runtime.sendMessage({
       type: 'OFFSCREEN_PLAY_SOUND',
       audioUrl,
@@ -130,7 +133,7 @@ export async function showChromeNotification(
       return;
     }
 
-    const iconUrl = chrome.runtime.getURL('icon-128.png');
+    const iconUrl = chrome.runtime.getURL('icon-t-128.png');
     const notificationId = `praxedes_${when}_${Date.now()}`;
 
     chrome.notifications.create(notificationId, {
@@ -149,46 +152,6 @@ export async function showChromeNotification(
     console.log('[DEBUG] Chrome notification created:', title);
   } catch (err) {
     console.warn('[Background] showChromeNotification failed:', err);
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// USER-AGENT SPOOFING via declarativeNetRequest
-// ═══════════════════════════════════════════════════════════════════════
-async function setupUserAgentSpoofing(): Promise<void> {
-  try {
-    const manifest = chrome.runtime.getManifest();
-    const userAgent = `browser-agent/${manifest.version} (multi-llm) ${navigator.userAgent}`;
-
-    await chrome.declarativeNetRequest.updateSessionRules({
-      removeRuleIds: [1],
-      addRules: [
-        {
-          id: 1,
-          priority: 1,
-          action: {
-            type: chrome.declarativeNetRequest.RuleActionType.MODIFY_HEADERS,
-            requestHeaders: [
-              {
-                header: 'User-Agent',
-                operation: chrome.declarativeNetRequest.HeaderOperation.SET,
-                value: userAgent,
-              },
-            ],
-          },
-          condition: {
-            urlFilter: 'http://localhost:*/*',
-            resourceTypes: [
-              chrome.declarativeNetRequest.ResourceType.XMLHTTPREQUEST,
-              chrome.declarativeNetRequest.ResourceType.OTHER,
-            ],
-          },
-        },
-      ],
-    });
-    console.log('[Background] User-Agent spoofing configured');
-  } catch (err) {
-    console.warn('[Background] User-Agent setup failed:', err);
   }
 }
 
@@ -217,53 +180,6 @@ async function limparGruposDaPonte(): Promise<number> {
   }
 
   return totalFechadas;
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// DEEP LINK HANDLER — agent://action patterns
-// ═══════════════════════════════════════════════════════════════════════
-async function handleDeepLink(url: string, tabId: number): Promise<boolean> {
-  try {
-    const parsed = new URL(url);
-
-    // Support patterns like chrome-extension://<id>/agent/<action>
-    // or custom scheme intercepted via webNavigation
-    const pathname = parsed.pathname.toLowerCase();
-
-    if (pathname.includes('/agent/reconnect')) {
-      // Re-init offscreen and debugger
-      await setupOffscreenDocument();
-      console.log('[DeepLink] Reconnect triggered');
-      try { await chrome.tabs.remove(tabId); } catch {}
-      return true;
-    }
-
-    if (pathname.includes('/agent/settings') || pathname.includes('/agent/permissions')) {
-      // Open options/settings page
-      const optionsUrl = chrome.runtime.getURL('sidepanel.html');
-      await chrome.tabs.create({ url: optionsUrl });
-      try { await chrome.tabs.remove(tabId); } catch {}
-      return true;
-    }
-
-    if (pathname.includes('/agent/tab/')) {
-      const match = pathname.match(/\/agent\/tab\/(\d+)/);
-      if (match) {
-        const targetTabId = parseInt(match[1], 10);
-        try {
-          const tab = await chrome.tabs.get(targetTabId);
-          if (tab.windowId) await chrome.windows.update(tab.windowId, { focused: true });
-          await chrome.tabs.update(targetTabId, { active: true });
-        } catch {}
-        try { await chrome.tabs.remove(tabId); } catch {}
-        return true;
-      }
-    }
-
-    return false;
-  } catch {
-    return false;
-  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -313,7 +229,8 @@ function markTabWorking(tabId: number, working: boolean): void {
 export default defineBackground(() => {
   debuggerManager.init();
   auditLogger.init();
-  setupOffscreenDocument();
+  iniciarAvisos();
+  iniciarDecisoes();
 
   // Ponte com os agentes locais. Reconecta sozinha, entao pode subir aqui sem
   // esperar nada: se o servidor ainda nao estiver de pe, ela tenta de novo.
@@ -369,26 +286,6 @@ export default defineBackground(() => {
           return true;
         }
 
-        case 'STOP_AGENT': {
-          // Sem agent-loop nem chat-handler (a extensao agora e so a ponte),
-          // isto so limpa o indicador visual e avisa o usuario — o
-          // agent-indicator.content.ts continua mandando esta mensagem
-          // quando alguem clica no botao de parar.
-          const tabId = msg.fromTabId === 'CURRENT_TAB' ? sender.tab?.id : msg.fromTabId;
-          if (tabId) {
-            markTabWorking(tabId, false);
-            hideAgentIndicators(tabId);
-            playNotificationSound('completed');
-            showChromeNotification(
-              '❌ Tarefa',
-              'Tarefa cancelada pelo usuário',
-              'completed',
-            );
-          }
-          respond({ ok: true });
-          break;
-        }
-
         case 'PLAY_NOTIFICATION_SOUND': {
           // Used by off-screen document - play for 'completed' as default
           playNotificationSound('completed');
@@ -433,23 +330,12 @@ export default defineBackground(() => {
     }
   });
 
-  // ─── Deep Link Interception ─────────────────────────────────────
-  chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
-    if (details.frameId !== 0) return;
-    if (details.url.includes('/agent/')) {
-      await handleDeepLink(details.url, details.tabId);
-    }
-  });
-
   // ─── Lifecycle Events ──────────────────────────────────────────
   chrome.runtime.onInstalled.addListener(async (details) => {
     console.log(`[Background] Installed (${details.reason})`);
-    await setupUserAgentSpoofing();
   });
 
   chrome.runtime.onStartup.addListener(async () => {
     console.log('[Background] Startup');
-    setupOffscreenDocument();
-    await setupUserAgentSpoofing();
   });
 });

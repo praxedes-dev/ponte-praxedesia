@@ -113,3 +113,8 @@ export const modulo: ModuloCapacidades = {
     },
   ],
 };
+
+/** C1 (recibo): filhas registradas por este opener desde `desde` (ms), SEM marcar como reportadas. */
+export function filhasDesde(openerTabId: number, desde: number): FilhaRegistrada[] {
+  return (filhasPorOpener.get(openerTabId) ?? []).filter((f) => f.quando >= desde);
+}

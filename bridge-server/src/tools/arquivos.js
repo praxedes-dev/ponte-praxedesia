@@ -60,7 +60,7 @@ export const TOOLS = [
     name: 'browser_upload_file',
     description:
       'Anexa arquivos do disco a um campo de upload da pagina. Isto e o que extensao nenhuma '
-      + 'consegue fazer: pegar o PDF em H:\\Meu Drive\\... e anexar direto no PJe.',
+      + 'consegue fazer: pegar um PDF do disco e anexar direto no formulario do site.',
     inputSchema: {
       type: 'object',
       properties: {

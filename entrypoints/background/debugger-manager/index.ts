@@ -1,6 +1,26 @@
+import { enviarComRetry } from './retry';
+
 type AnyParams = Record<string, unknown>;
 type MethodListener = (params: AnyParams, sessionId?: string) => void;
 type GanchoAoAnexar = (tabId: number) => void | Promise<void>;
+
+/**
+ * Modo simples (Flow, 09/11/2026): a pedido do usuário, nessas paginas a ponte
+ * so clica, digita e le. Nada de escutar ou interceptar rede (Network/Fetch),
+ * console (Runtime.enable) nem observador instalado na pagina (__ponteMut):
+ * a mao o Flow gera, pela ponte voltava "atividade incomum".
+ */
+const HOSTS_SIMPLES = ['https://flow.google.com/', 'https://labs.google/'];
+const METODOS_FORA_DO_SIMPLES = new Set(['Network.enable', 'Runtime.enable', 'Fetch.enable']);
+export async function siteSimples(tabId: number): Promise<boolean> {
+  const aba = await chrome.tabs.get(tabId).catch(() => null);
+  const url = aba?.pendingUrl || aba?.url || '';
+  return HOSTS_SIMPLES.some((h) => url.startsWith(h));
+}
+function proibidoNoSimples(method: string, params?: object): boolean {
+  if (METODOS_FORA_DO_SIMPLES.has(method)) return true;
+  return method === 'Runtime.evaluate' && String((params as { expression?: string } | undefined)?.expression ?? '').includes('__ponteMut');
+}
 
 class DebuggerManager {
   private sessions = new Set<number>();
@@ -110,37 +130,52 @@ class DebuggerManager {
     this.listeners.delete(tabId);
   }
 
-  async send<T = unknown>(tabId: number, method: string, params?: object, retryCount = 0): Promise<T> {
-    try {
-      return (await chrome.debugger.sendCommand({ tabId }, method, params ?? {})) as T;
-    } catch (err) {
-      const msg = String(err);
-      
-      // Auto-reconnect if detached
-      if (msg.includes('Debugger is not attached to the tab') && retryCount < 3) {
-        console.log(`[Debugger] Re-attaching to tab ${tabId} (attempt ${retryCount + 1})`);
-        this.sessions.delete(tabId);
-        await chrome.debugger.attach({ tabId }, '1.3');
-        this.sessions.add(tabId);
-        
-        await chrome.debugger.sendCommand({ tabId }, 'Page.enable');
-        await chrome.debugger.sendCommand({ tabId }, 'Runtime.enable');
-        await chrome.debugger.sendCommand({ tabId }, 'Network.enable');
+  /** Solta o debugger de TODAS as abas anexadas (botao "Parar tudo"). Devolve quantas soltou. */
+  async detachAll(): Promise<number> {
+    const abas = [...this.sessions];
+    for (const id of abas) await this.detach(id);
+    return abas.length;
+  }
 
-        await this.rodarGanchosAoAnexar(tabId);
+  /**
+   * v6.1 (b): politica de retry em `retry.ts` (leitura repete, acao nunca repete o que pode ter
+   * executado). O 4o parametro ficou so por compatibilidade de assinatura e nao e mais usado.
+   */
+  async send<T = unknown>(tabId: number, method: string, params?: object, _retryCount = 0): Promise<T> {
+    if (proibidoNoSimples(method, params) && (await siteSimples(tabId))) return {} as T;
+    return enviarComRetry<T>(method, {
+      enviar: async () => (await chrome.debugger.sendCommand({ tabId }, method, params ?? {})) as T,
+      reanexar: () => this.reanexar(tabId),
+      recarregar: () => this.recarregar(tabId),
+      log: (msg) => console.log(`[Debugger] tab ${tabId}: ${msg}`),
+    });
+  }
 
-        return this.send(tabId, method, params, retryCount + 1);
-      }
-      
-      // Reload on timeout
-      if (msg.includes('Debugger command timed out') && retryCount < 1) {
-        console.log(`[Debugger] Timeout on tab ${tabId}, reloading to recover`);
-        await chrome.tabs.reload(tabId);
-        await new Promise((r) => setTimeout(r, 2000));
-        return this.send(tabId, method, params, retryCount + 1);
-      }
-      
-      throw err;
+  /** Anexa de novo (a sessao morreu) e refaz os enables e os ganchos de modulo. */
+  private async reanexar(tabId: number): Promise<void> {
+    this.sessions.delete(tabId);
+    try { await chrome.debugger.detach({ tabId }); } catch { /* ja solto */ }
+    await chrome.debugger.attach({ tabId }, '1.3');
+    this.sessions.add(tabId);
+
+    await chrome.debugger.sendCommand({ tabId }, 'Page.enable');
+    if (!(await siteSimples(tabId))) {
+      await chrome.debugger.sendCommand({ tabId }, 'Runtime.enable');
+      await chrome.debugger.sendCommand({ tabId }, 'Network.enable');
+    }
+
+    await this.rodarGanchosAoAnexar(tabId);
+  }
+
+  /** Recarrega a aba e espera `status: complete` (ate 10 s). Leitura que travou, uma vez. */
+  private async recarregar(tabId: number): Promise<void> {
+    await chrome.tabs.reload(tabId);
+    const limite = Date.now() + 10_000;
+    await new Promise((r) => setTimeout(r, 500));
+    while (Date.now() < limite) {
+      const aba = await chrome.tabs.get(tabId).catch(() => null);
+      if (!aba || aba.status === 'complete') break;
+      await new Promise((r) => setTimeout(r, 200));
     }
   }
 
@@ -161,7 +196,7 @@ class DebuggerManager {
 
   async screenshot(tabId: number): Promise<string> {
     // A imagem sai em PIXELS CSS, os mesmos de browser_click {x,y}. Sem isto o
-    // print vinha em pixel de tela (DPR 1,25 no notebook do Cezar) e o agente
+    // print vinha em pixel de tela (DPR 1,25 no notebook do usuário) e o agente
     // que media a coordenada na imagem clicava 25% ao lado (relato de
     // 23/09/2026, "fator ~1.29 sem informar o fator").
     let clip: { x: number; y: number; width: number; height: number; scale: number } | undefined;
@@ -180,12 +215,79 @@ class DebuggerManager {
     } catch {
       // Sem metrica: cai no print cru, como sempre foi.
     }
-    const res = await this.send<{ data: string }>(
-      tabId,
-      'Page.captureScreenshot',
-      { format: 'jpeg', quality: 75, optimizeForSpeed: true, ...(clip ? { clip } : {}) },
-    );
+    const res = await this.capturarComReserva(tabId, { format: 'jpeg', quality: 75, optimizeForSpeed: true, ...(clip ? { clip } : {}) });
     return res.data;
+  }
+
+  /**
+   * Janela da ponte minimizada que nunca foi desenhada (28/10/2026): o
+   * Page.captureScreenshot espera um quadro que nao vem e trava 60 s. Sem
+   * resposta em 2,5 s, abre a janela sem foco um instante para ela desenhar uma
+   * vez e devolve ao minimizado (fromSurface:false o Chrome recusa). Depois do
+   * primeiro desenho os prints minimizados voltam a sair sozinhos.
+   */
+  private async capturarComReserva(tabId: number, params: Record<string, unknown>): Promise<{ data: string }> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const prazo = new Promise<null>((r) => { timer = setTimeout(() => r(null), 2_500); });
+    try {
+      const rapido = await Promise.race([this.send<{ data: string }>(tabId, 'Page.captureScreenshot', params), prazo]);
+      if (rapido) return rapido;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    const { windowId } = await chrome.tabs.get(tabId);
+    const { state } = await chrome.windows.get(windowId);
+    if (state !== 'minimized') return this.send<{ data: string }>(tabId, 'Page.captureScreenshot', params);
+    await chrome.windows.update(windowId, { state: 'normal', focused: false });
+    try {
+      // Teto (03/11/2026): este print segura a vez da janela; preso, travava a
+      // digitacao dos outros agentes por 90 s.
+      let t2: ReturnType<typeof setTimeout> | undefined;
+      const teto = new Promise<never>((_, rej) => { t2 = setTimeout(() => rej(new Error('o print nao saiu em 15 s (janela da ponte ocupada); tente de novo')), 15_000); });
+      return await Promise.race([this.send<{ data: string }>(tabId, 'Page.captureScreenshot', params), teto]).finally(() => clearTimeout(t2));
+    } finally {
+      await chrome.windows.update(windowId, { state: 'minimized' }).catch(() => {});
+    }
+  }
+
+  /**
+   * X5: print da janela em PIXELS CSS (os mesmos de browser_click {x,y}). `data` vem
+   * SEM reducao; `fator` (< 1 quando a janela e maior que `maxW` x `maxH`, padrao 1280x800)
+   * diz quanto quem chama deve reduzir; o agente divide a coordenada da imagem por ele.
+   * Print de 1280x800 custa ~1.400 tokens; um de 1920x1080, ~2.700.
+   */
+  async capturarTela(
+    tabId: number, { maxW = 1280, maxH = 800 }: { maxW?: number; maxH?: number } = {},
+  ): Promise<{ data: string; fator: number; cssW: number; cssH: number; w: number; h: number }> {
+    let cssW = 0;
+    let cssH = 0;
+    let pageX = 0;
+    let pageY = 0;
+    let razao = 1;
+    try {
+      const m = await this.send<{ cssVisualViewport?: { pageX: number; pageY: number; clientWidth: number; clientHeight: number } }>(
+        tabId, 'Page.getLayoutMetrics', {},
+      );
+      const dpr = await this.send<{ result?: { value?: number } }>(
+        tabId, 'Runtime.evaluate', { expression: 'window.devicePixelRatio', returnByValue: true },
+      );
+      const vv = m?.cssVisualViewport;
+      if (vv) { cssW = vv.clientWidth; cssH = vv.clientHeight; pageX = vv.pageX; pageY = vv.pageY; }
+      razao = Number(dpr?.result?.value) || 1;
+    } catch {
+      // Sem metrica: print cru, sem reducao.
+    }
+    const fator = cssW > 0 && cssH > 0 ? Math.min(1, maxW / cssW, maxH / cssH) : 1;
+    // Captura sempre em pixel CSS (escala 1/razao). A reducao por `fator` e feita depois, no canvas:
+    // clip.scale < 1 travou o Page.captureScreenshot por 60 s com a janela emulada em 1920x1080.
+    const clip = cssW > 0 && razao !== 1
+      ? { x: pageX, y: pageY, width: cssW, height: cssH, scale: 1 / razao }
+      : undefined;
+    const res = await this.capturarComReserva(tabId, { format: 'jpeg', quality: 75, optimizeForSpeed: true, ...(clip ? { clip } : {}) });
+    return {
+      data: res.data, fator, cssW, cssH,
+      w: Math.round(cssW * fator), h: Math.round(cssH * fator),
+    };
   }
 }
 

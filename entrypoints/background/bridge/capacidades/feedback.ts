@@ -1,7 +1,7 @@
 import type { ContextoCapacidade, ModuloCapacidades, Resultado } from './registro';
 
 /**
- * Obra 22 — canal de feedback DO AGENTE (ideia do Dr. Cezar, 05/09/2026,
+ * Obra 22 — canal de feedback DO AGENTE (ideia do usuário, 05/09/2026,
  * docs/obra-20260904/00-PLANO-DE-OBRA.md §21). "Um lugar feito pra agente, nao
  * pra humano" — onde um agente no meio de um protocolo do PJe registra um
  * defeito ou uma melhoria em duas segundos, em vez de precisar parar e

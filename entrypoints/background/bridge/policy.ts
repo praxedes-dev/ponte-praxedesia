@@ -6,6 +6,7 @@ import {
   type Resolucao,
 } from '../execution-engine';
 import { normaliseKey, teclaImprimivel, MODIFICADOR_DE_COMANDO } from '../execution-engine/cdp-tools';
+import { aplicarDecisao } from '../painel/decisao-runtime';
 
 /**
  * Freio da ponte.
@@ -35,6 +36,8 @@ export interface Veredito {
   /** true quando `confirm: true` resolve; false quando e proibido de todo jeito. */
   confirmavel?: boolean;
   motivo?: string;
+  /** v6.1 (f): o usuário foi avisado por notificacao com botoes; o agente espera com browser_decisao. */
+  decisaoId?: string;
 }
 
 const LIBERADO: Veredito = { permitido: true };
@@ -49,7 +52,7 @@ const HOSTS_FINANCEIROS = [
   'mercadobitcoin.com.br', 'foxbit.com.br',
 ];
 
-const TEXTOS_DESTRUTIVOS = [
+export const TEXTOS_DESTRUTIVOS = [
   'excluir', 'exclusao', 'deletar', 'delete', 'remover', 'remove', 'apagar',
   'cancelar assinatura', 'encerrar conta', 'desativar conta',
   'comprar', 'buy now', 'finalizar compra', 'pagar', 'transferir', 'enviar pix',
@@ -109,7 +112,7 @@ const ACOES_QUE_CLICAM = new Set(['click', 'drag', 'cap_click_xy']);
  */
 const TECLAS_QUE_ATIVAM = new Set(['Enter', ' ']);
 
-function hostFinanceiro(url: string | undefined): string | null {
+export function hostFinanceiro(url: string | undefined): string | null {
   if (!url) return null;
   try {
     const host = new URL(url).hostname.toLowerCase();
@@ -194,6 +197,26 @@ function cliqueEhIrreversivel(d: DescritorDeElemento): { gatilho: string; textoE
   return { gatilho, textoExibido: (d.texto || d.ariaLabel || '').trim().slice(0, 80) };
 }
 
+/**
+ * Liberacoes por site autorizadas pelo usuário (22/10/2026): o texto EXATO
+ * casa e o host bate. "Protocolar Inicial" no PJe do TJ-RO so abre o resumo do
+ * cadastro (aba RichFaces com onclick, que a prova de aba nao aceita); quem
+ * protocola e o botao de assinar, que segue barrado.
+ */
+export const LIBERADOS_POR_SITE: Array<{ host: string; texto: string }> = [
+  { host: 'tjro.jus.br', texto: 'protocolar inicial' },
+];
+
+export function liberadoPorSite(url: string | undefined, d: DescritorDeElemento): boolean {
+  if (!url) return false;
+  let host = '';
+  try { host = new URL(url).hostname.toLowerCase(); } catch { return false; }
+  const textos = [d.texto, d.ariaLabel].map((c) => (c ?? '').trim().toLowerCase().replace(/\s+/g, ' ')).filter(Boolean);
+  if (!textos.length) return false;
+  return LIBERADOS_POR_SITE.some((l) => (host === l.host || host.endsWith(`.${l.host}`))
+    && textos.every((t) => t === l.texto));
+}
+
 /** A forma minima que `avaliar` le. `PlannedAction` cabe aqui, e as
  * capacidades `cap_*` montam a acao delas com o proprio nome. */
 export interface AcaoAvaliavel {
@@ -226,6 +249,12 @@ function precisaDeAlvo(tipo: string): boolean {
  */
 function vereditoDeResolucaoFalha(acao: string, r: Extract<Resolucao, { ok: false }>): Veredito {
   if (r.causa === 'no-inexistente' || r.causa === 'sem-alvo') return LIBERADO;
+  // S2: `exato:true` achou mais de um elemento com o mesmo nome. A mensagem ja
+  // lista os candidatos e diz como desempatar; nao e permissao, entao confirm
+  // nao resolve.
+  if (r.causa === 'ambiguo') {
+    return { permitido: false, confirmavel: false, motivo: `${acao}: ${r.motivo}` };
+  }
   return {
     permitido: false,
     // `confirm: true` nao resolve: o problema nao e permissao, e nao saber em
@@ -245,7 +274,7 @@ function vereditoDeResolucaoFalha(acao: string, r: Extract<Resolucao, { ok: fals
  * mesmas (com a travessia da propria acao) e passam aqui — nunca deixam o
  * freio resolver "por fora" um alvo diferente do que elas vao usar.
  */
-export async function avaliar(
+async function avaliarSemDecisao(
   action: AcaoAvaliavel,
   ws: AgentWorkspace,
   confirmado: boolean,
@@ -299,7 +328,8 @@ export async function avaliar(
       alvoResolvido!.descritor,
     ))
   );
-  const achadoDoClique = clicaDeAcao ? cliqueEhIrreversivel(alvoResolvido!.descritor) : null;
+  const achadoDoClique = clicaDeAcao && !liberadoPorSite(urlAtual, alvoResolvido!.descritor)
+    ? cliqueEhIrreversivel(alvoResolvido!.descritor) : null;
 
   // 1. Digitar em campo de senha nao passa nem com confirmacao. O elemento
   // examinado e `alvo.efetivo`: o no que de fato RECEBE o texto, com a
@@ -356,7 +386,9 @@ export async function avaliar(
 
   // 3. Qualquer input dentro de site financeiro exige confirmacao a cada acao.
   if (ACOES_DE_INPUT.has(action.type)) {
-    const aqui = hostFinanceiro(urlAtual);
+    // L5: elemento dentro de moldura de outro site: o host da MOLDURA conta tambem
+    // (pagina de loja com iframe do Stripe/PayPal/banco).
+    const aqui = hostFinanceiro(urlAtual) ?? hostFinanceiro(alvoResolvido?.moldura?.url);
     if (aqui && !confirmado) {
       return {
         permitido: false,
@@ -384,6 +416,29 @@ export async function avaliar(
   }
 
   return LIBERADO;
+}
+
+/**
+ * v6.1 (f): o freio com decisao por notificacao. Quando a acao e barrada E o usuário pode resolver
+ * (`confirmavel`), em vez de so devolver o erro, abre uma decisao com botoes "Aprovar uma vez" /
+ * "Negar" no Windows. Aprovada, a MESMA acao passa uma vez (aba e alvo iguais, ate 60 s) quando o
+ * agente repete. Veto de senha (nao confirmavel) e acao ja confirmada com `confirm: true` seguem como
+ * sempre. Host local/teste nunca notifica: la o veredito sai intacto.
+ */
+export async function avaliar(
+  action: AcaoAvaliavel,
+  ws: AgentWorkspace,
+  confirmado: boolean,
+  alvo?: AlvoResolvido,
+): Promise<Veredito> {
+  const v = await avaliarSemDecisao(action, ws, confirmado, alvo);
+  if (v.permitido || !v.confirmavel || confirmado) return v;
+  try {
+    return await aplicarDecisao(v, action, ws.activeTabId, alvo?.descritor?.texto || alvo?.descritor?.ariaLabel);
+  } catch (err) {
+    console.warn('[Freio] decisao por notificacao falhou, segue o erro de sempre:', err);
+    return v;
+  }
 }
 
 /**

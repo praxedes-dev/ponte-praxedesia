@@ -76,7 +76,7 @@ export const modulo: ModuloCapacidades = {
             + `(${moldura}). O clique chega la dentro, mas a ponte nao confere o EFEITO: NAO conte como `
             + 'feito. Mire pela coordenada que browser_read_page/browser_find listam em "DENTRO DE '
             + 'MOLDURAS DE OUTRO SITE" e confira com browser_screenshot (pixels CSS, os mesmos do clique) '
-            + 'ou relendo a pagina. Se nada mudou, peca ao Dr. Cezar para clicar ali.';
+            + 'ou relendo a pagina. Se nada mudou, peca ao usuário para clicar ali.';
         }
         if (!backendNodeId) {
           return `clique enviado a (${p.x}, ${p.y}), mas NAO HA ELEMENTO nesse ponto (fora da area visivel `

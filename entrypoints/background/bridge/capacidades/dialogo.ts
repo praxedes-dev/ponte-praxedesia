@@ -10,10 +10,10 @@ import type { ContextoCapacidade, ModuloCapacidades, Resultado } from './registr
  * A obra 01 moveu esse auto-aceite para ca, num gancho `aoAnexar`, sem mudar o
  * comportamento — este arquivo SUBSTITUI aquele auto-aceite por um freio de
  * verdade: nenhum dialogo e respondido sozinho, nem por timeout. Quem responde
- * e o Cezar (pelo chat, via a tool `browser_dialog`) ou ele mesmo clicando na
+ * e o usuário (pelo chat, via a tool `browser_dialog`) ou ele mesmo clicando na
  * janela da ponte, que e Chrome real.
  *
- * Decisao do Cezar, fechada: NUNCA auto-aceitar, nem "so para alert" — ele
+ * Decisao do usuário, fechada: NUNCA auto-aceitar, nem "so para alert" — ele
  * quer ver o que a pagina disse antes de decidir.
  */
 
@@ -55,7 +55,7 @@ const inicioPorCtx = new WeakMap<ContextoCapacidade, number>();
  * ao voltar `attach()` roda os ganchos de novo no fim (2a vez), incondicional.
  * Com uma closure nova por chamada, isso registraria DOIS listeners para o
  * mesmo `Page.javascriptDialogOpening` — e um unico dialogo real chamaria o
- * Cezar DUAS vezes pelo mesmo dialogo (aqui e pior que o "No dialog is
+ * usuário DUAS vezes pelo mesmo dialogo (aqui e pior que o "No dialog is
  * showing" mudo do auto-aceite antigo). Guardando a MESMA referencia por
  * tabId, a segunda chamada de `dm.on(tabId, metodo, fn)` adiciona a funcao ja
  * presente no Set — no-op. Vale para os dois listeners (abrir e fechar).
@@ -83,7 +83,7 @@ function listenerDeAbrirDe(tabId: number): (params: ParamsDeEvento) => void {
 function listenerDeFecharDe(tabId: number): (params: ParamsDeEvento) => void {
   let fn = listenerAoFecharPorAba.get(tabId);
   if (!fn) {
-    // Cobre o Cezar clicando ele mesmo na janela da ponte: o Chrome manda
+    // Cobre o usuário clicando ele mesmo na janela da ponte: o Chrome manda
     // este evento tanto para aceitar/cancelar por CDP quanto para clique real.
     fn = () => {
       pendentes.delete(tabId);
@@ -141,7 +141,7 @@ export const modulo: ModuloCapacidades = {
     aoAnexar(tabId: number) {
       dm.on(tabId, 'Page.javascriptDialogOpening', listenerDeAbrirDe(tabId));
       // Cobre tanto o cap_dialogo (que ja apaga a pendencia por conta propria)
-      // quanto o Cezar clicando direto na janela da ponte — sem isto, um
+      // quanto o usuário clicando direto na janela da ponte — sem isto, um
       // dialogo respondido na mao deixava a pendencia presa e todo comando
       // seguinte continuava barrado achando que o dialogo ainda estava aberto.
       dm.on(tabId, 'Page.javascriptDialogClosed', listenerDeFecharDe(tabId));

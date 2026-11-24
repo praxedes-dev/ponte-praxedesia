@@ -36,7 +36,6 @@ export type ActionType =
   | 'wait_for_text'
   | 'extract'
   | 'drag'
-  | 'get_console_logs'
   | 'request_confirmation'
   | 'memory_write'
   | 'memory_read'
@@ -129,6 +128,8 @@ export interface ActionTarget {
   x?: number;
   y?: number;
   agentId?: number;
+  /** S2: na busca semantica, casa o nome INTEIRO e recusa ambiguidade (lista os candidatos). */
+  exato?: boolean;
 }
 
 export interface PlannedAction {
@@ -159,6 +160,10 @@ export interface PageState {
   contentLength: number;
   screenshot?: string;
   accessibilityTree?: string;
+  /** B3: ha nos cortados por profundidade (a leitura nao mostra tudo). */
+  avisoProfundidade?: string;
+  /** Fase 4: escopo sem resultado, itens omitidos, pagina trocou durante a leitura. */
+  avisoLeitura?: string;
 }
 
 export interface InteractiveElement {
@@ -172,6 +177,8 @@ export interface InteractiveElement {
   ce?: string;              // contenteditable attribute value ("true", "", "plaintext-only")
   href?: string;
   type?: string;
+  /** Fase 4 (L1): o centro do elemento esta fora da janela da aba. */
+  foraDaVista?: boolean;
   isSubmit?: boolean;       // true when element looks like a chat/form submit button (Run, Send, Submit…)
   rect: { x: number; y: number; w: number; h: number };
 }

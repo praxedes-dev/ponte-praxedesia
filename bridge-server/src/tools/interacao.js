@@ -1,4 +1,4 @@
-import { SEMANTIC_TARGET_PROPS, buildTarget } from './_comum.js';
+import { SEMANTIC_TARGET_PROPS, REF_MOLDURA_PROP, buildTarget } from './_comum.js';
 
 /** Tools de interacao real com a pagina: clique, digitacao, tecla, rolagem, arrasto. */
 
@@ -6,7 +6,8 @@ export const TOOLS = [
   {
     name: 'browser_click',
     description:
-      'Clique REAL (mouse de verdade via CDP, isTrusted). Por ref (preferido), por busca semantica, '
+      'Clique REAL (mouse de verdade via CDP, isTrusted). Login com usuario e senha ja preenchidos pelo gerenciador de senhas: pode clicar em Entrar/Login/Acessar sem perguntar (o usuário autorizou); nunca digite senha e, em site financeiro, nao clique em login. '
+      + 'Por ref (preferido), por busca semantica, '
       + 'ou por coordenada x/y quando o alvo nao tem ref na arvore -- ex.: linha de sugestao criada na '
       + 'hora por um autocomplete. Para a coordenada, meca o elemento com browser_javascript '
       + '(getBoundingClientRect) e clique no centro. Depois do clique a ponte espera a rede acalmar '
@@ -21,6 +22,7 @@ export const TOOLS = [
       type: 'object',
       properties: {
         ...SEMANTIC_TARGET_PROPS,
+        ...REF_MOLDURA_PROP,
         x: { type: 'number', description: 'X em pixels CSS do viewport. Use com y, quando nao houver ref.' },
         y: { type: 'number', description: 'Y em pixels CSS do viewport.' },
         esperar: { type: 'boolean', description: 'Esperar a rede acalmar depois do clique. Padrao: true.' },
@@ -114,6 +116,7 @@ export const TOOLS = [
             + '(texto longo no modo teclado precisa de mais tempo) e este valor -- nunca menor que a formula.',
         },
         ...SEMANTIC_TARGET_PROPS,
+        ...REF_MOLDURA_PROP,
       },
       required: ['text'],
     },
@@ -132,7 +135,9 @@ export const TOOLS = [
     },
     timeout: (i) => {
       const formula = i.modo === 'teclado'
-        ? 30_000 + String(i.text ?? '').length * (i.delay_ms ?? 60)
+        // Cada tecla custa o delay MAIS a ida e volta ao Chrome (~45 ms medidos
+        // com 5 agentes, 03/11/2026); so o delay estourava prompt longo do Flow.
+        ? 30_000 + String(i.text ?? '').length * ((i.delay_ms ?? 60) + 50)
         : 60_000;
       return Math.max(formula, i.timeout_ms ?? 0);
     },

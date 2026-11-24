@@ -72,7 +72,7 @@ function moverParaDestino(origem, pastaDestino, nomeDestino) {
   // `item.filename`, decidido pelo Chrome. Quando o Chrome grava fora da
   // subpasta de staging — nome invalido no Windows, "perguntar onde salvar"
   // ligado, colisao de nome — `dirname(origem)` vira a **pasta de Downloads do
-  // Dr. Cezar**, e a linha apagava ela inteira, recursivamente, devolvendo
+  // usuário**, e a linha apagava ela inteira, recursivamente, devolvendo
   // sucesso. Achado por auditoria em 06/09/2026, antes de rodar em producao.
   //
   // Agora: so apaga se o caminho estiver comprovadamente dentro da pasta de
@@ -104,13 +104,14 @@ export const TOOLS = [
       type: 'object',
       properties: {
         pasta: { type: 'string', description: 'Pasta de destino (caminho do Windows). Padrao: ~/.praxedes-bridge/downloads.' },
+        ttl_s: { type: 'number', description: 'Quanto tempo o armar espera o download comecar, em s. Padrao 20, teto 900 (arquivo que o site demora a preparar, ex. Flow 1080p).' },
       },
     },
     action: 'cap_download_armar',
     build: (i) => {
       const pasta = i.pasta && i.pasta.trim() ? i.pasta : PASTA_PADRAO;
       mkdirSync(pasta, { recursive: true });
-      return { params: { pasta } };
+      return { params: { pasta, ...(i.ttl_s ? { ttl_s: i.ttl_s } : {}) } };
     },
     timeout: 15_000,
     // Sem `formatar`: o JSON cru de { pasta, metodo, token } e o que os testes
