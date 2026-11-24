@@ -40,10 +40,10 @@ Com o Flow logado no seu Chrome (plano pago do Google, ex.: Google AI Pro):
 | Ferramenta | O que faz |
 |---|---|
 | `browser_flow_subir` | Sobe imagens ou vídeos para o projeto **sem abrir a janela do Windows** e devolve os IDs |
-| `browser_flow_gerar` | Escreve o pedido, envia, espera terminar e devolve o que nasceu. Com `baixar: "2K"`, já baixa tudo no fim |
+| `browser_flow_gerar` | Escreve o pedido, envia, espera terminar e devolve o que nasceu. Com `baixar: "2K"`, já baixa tudo no fim (imagem ou vídeo) |
 | `browser_flow_incluir` | Anexa ao pedido uma imagem ou personagem do projeto, pelo nome |
 | `browser_flow_esperar` | Espera uma geração longa (vídeo) terminar |
-| `browser_flow_baixar` | Baixa em 2K, já com o nome que você escolher |
+| `browser_flow_baixar` | Baixa imagens em 2K ou vídeos em mp4 (`videos: 2` = os 2 mais recentes), já com o nome que você escolher |
 
 Na prática você só fala com o Claude: *"gera no meu projeto do Flow uma arte 3:4 de um café
 na mesa, luz da manhã, e baixa em 2K"*.

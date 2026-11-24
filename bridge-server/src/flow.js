@@ -31,7 +31,7 @@ export const FLOW_TOOLS = [
   {
     name: 'browser_flow_baixar',
     description:
-      'Google Flow: baixa imagens do projeto em 2K (ou 1K) numa chamada so. Sem ids, pega as N mais recentes da '
+      'Google Flow: baixa imagens do projeto em 2K (ou 1K) numa chamada so (ou videos em mp4, com videos:N). Sem ids, pega as N mais recentes da '
       + 'grade. Imagem gerada sai pelo menu "2K Aprimorada"; imagem enviada ao Flow baixa no tamanho original. '
       + 'Sem janela "Salvar como". Aceita nomes de destino.',
     inputSchema: {
@@ -40,6 +40,7 @@ export const FLOW_TOOLS = [
         projeto: PROJETO,
         ids: { type: 'array', items: { type: 'string' }, description: 'data-media-id das imagens. Sem isto: as mais recentes.' },
         recentes: { type: 'number', description: 'Quantas das mais recentes (sem ids). Padrao 1.' },
+        videos: { type: 'number', description: 'Baixa os N VIDEOS mais recentes do projeto (mp4 no tamanho gerado), em vez de imagens.' },
         tamanho: { type: 'string', enum: ['1K', '2K'], description: 'Padrao 2K (4K e bloqueado no plano Pro).' },
         pasta: { type: 'string', description: 'Onde gravar. Padrao Downloads\\flow.' },
         nomes: { type: 'array', items: { type: 'string' }, description: 'Nome de cada arquivo (sem extensao), na ordem.' },
@@ -74,7 +75,7 @@ export const FLOW_TOOLS = [
         incluir: { type: 'array', items: { type: 'string' }, description: 'Nomes de recursos do projeto a anexar antes.' },
         espera_s: { type: 'number', description: 'Teto de espera da geracao. Padrao 240.' },
         agente: { type: 'boolean', description: 'Liga (true) ou desliga (false) o modo Agente antes de enviar. Sem isto, nao mexe.' },
-        baixar: { type: 'string', enum: ['1K', '2K'], description: 'Ao terminar, ja baixa as midias novas nesse tamanho (mesmo caminho do browser_flow_baixar).' },
+        baixar: { type: 'string', enum: ['1K', '2K'], description: 'Ao terminar, ja baixa as midias novas: imagem nesse tamanho, video em mp4 no tamanho gerado.' },
         pasta: { type: 'string', description: 'Com baixar: onde gravar. Padrao Downloads\\flow.' },
       },
       required: ['comando'],
@@ -158,10 +159,43 @@ const LISTAR_GRADE = `return Array.from(document.querySelectorAll('img[data-medi
   return {id:i.getAttribute('data-media-id'), y:Math.round(r.y), x:Math.round(r.x)};}).sort(function(a,b){return a.y-b.y||a.x-b.x;})
   .filter(function(v,i,a){return a.findIndex(function(o){return o.id===v.id;})===i;});`;
 
+// 24/11/2026: video nao tem data-media-id na grade nem menu de tamanho. Cada flow-video-tile tem o seu
+// botao "Fazer o download", que baixa o mp4 direto. Ordem da tela = mais recente primeiro.
+async function baixarVideos(ctx, n, pasta, nomes = []) {
+  const saida = [];
+  for (let k = 0; k < n; k++) {
+    try {
+      const ok = await ctx.ate(`var bs=Array.from(document.querySelectorAll('button[aria-label="Fazer o download"],button[aria-label="ponte-baixar-video"]'))
+        .filter(function(b){var c=b; for(var i=0;i<10&&c;i++){ if(c.querySelector&&c.querySelector('flow-video-tile')) return true; c=c.parentElement;} return false;});
+        bs.forEach(function(b){b.setAttribute('aria-label','Fazer o download');});
+        var b=bs[${k}]; if(!b) return null; b.scrollIntoView({block:'center'}); b.setAttribute('aria-label','ponte-baixar-video'); return true;`, 20_000);
+      if (!ok) { saida.push({ video: k + 1, ok: false, erro: 'nao achei o botao de baixar deste video' }); break; }
+      await esperar(600);
+      await ctx.tool('browser_download_arm', { pasta, ttl_s: 180 });
+      await ctx.tool('browser_click', { ariaLabel: 'ponte-baixar-video', exato: true });
+      const w = await ctx.tool('browser_download_wait', { timeout_ms: 180_000 });
+      let dado; try { dado = JSON.parse(w.texto); } catch { dado = { caminho: w.texto }; }
+      let caminho = dado.caminho;
+      if (nomes[k] && caminho && existsSync(caminho)) {
+        const novo = join(dirname(caminho), `${nomes[k]}${extname(caminho)}`);
+        if (!existsSync(novo)) { renameSync(caminho, novo); caminho = novo; }
+      }
+      saida.push({ video: k + 1, ok: true, caminho, bytes: dado.bytes });
+    } catch (err) {
+      saida.push({ video: k + 1, ok: false, erro: String(err.message || err).slice(0, 300) });
+    }
+  }
+  return saida;
+}
+
 async function baixar(input, ctx) {
   const tamanho = input.tamanho === '1K' ? '1K' : '2K';
   const pasta = input.pasta || join(homedir(), 'Downloads', 'flow');
   const uuid = await abrirProjeto(ctx, input);
+  if (Number(input.videos) > 0) {
+    const arquivos = await baixarVideos(ctx, Number(input.videos), pasta, Array.isArray(input.nomes) ? input.nomes : []);
+    return { projeto: uuid, pasta, total: arquivos.length, ok: arquivos.filter((a) => a.ok).length, arquivos };
+  }
   let ids = Array.isArray(input.ids) ? input.ids : null;
   if (!ids || !ids.length) {
     const grade = await ctx.ate(`var g=(function(){${LISTAR_GRADE}})(); return g.length ? g : null;`, 20_000);
@@ -299,6 +333,7 @@ async function gerar(input, ctx) {
   let incluidos = null;
   if (Array.isArray(input.incluir) && input.incluir.length) incluidos = await incluir({ nomes: input.incluir }, ctx);
   const antes = new Set(((await ctx.js(LISTAR_GRADE)) || []).map((g) => g.id));
+  const videosAntes = Number(await ctx.js(`return document.querySelectorAll('flow-video-tile').length;`)) || 0;
   const campo = await ctx.js(`var e=Array.from(document.querySelectorAll('[contenteditable=true]')).find(function(e){return e.getBoundingClientRect().width>0;});
     var r=e.getBoundingClientRect(); return {x:Math.round(r.x+Math.min(40,r.width/2)), y:Math.round(r.y+r.height/2)};`);
   // Clique REAL no campo antes de digitar: foco dado por JS logo depois de
@@ -327,14 +362,16 @@ async function gerar(input, ctx) {
     return {id:id, w:i&&i.naturalWidth, h:i&&i.naturalHeight, src:i&&i.src};});`) : [];
   const resposta = await ctx.js(`var t=document.body.innerText; var i=t.lastIndexOf('O que você quer criar?'); return (i>0?t.slice(Math.max(0,i-400),i):'').replace(/\\s+/g,' ').trim();`);
   // Pedido do usuario (24/11/2026): terminou, ja baixa, sem uma chamada por passo.
-  const baixados = input.baixar && novos.length
-    ? (await baixar({ projeto: uuid, ids: novos, tamanho: input.baixar, pasta: input.pasta }, ctx)).arquivos
-    : undefined;
+  const videosNovos = Math.max(0, (Number(await ctx.js(`return document.querySelectorAll('flow-video-tile').length;`)) || 0) - videosAntes);
+  let baixados;
+  if (input.baixar && novos.length) baixados = (await baixar({ projeto: uuid, ids: novos, tamanho: input.baixar, pasta: input.pasta }, ctx)).arquivos;
+  if (input.baixar && videosNovos) baixados = [...(baixados || []), ...await baixarVideos(ctx, videosNovos, input.pasta || join(homedir(), 'Downloads', 'flow'))];
   return {
     projeto: uuid, terminou, novos: dims, resposta_do_agente: resposta,
+    ...(videosNovos ? { videos_novos: videosNovos } : {}),
     ...(baixados ? { baixados } : {}),
     ...(incluidos ? { incluidos } : {}),
-    ...(!novos.length ? { aviso: 'nenhuma midia nova na grade: o agente pode ter respondido com pergunta. Leia resposta_do_agente.' } : {}),
+    ...(!novos.length && !videosNovos ? { aviso: 'nenhuma midia nova na grade: o agente pode ter respondido com pergunta. Leia resposta_do_agente.' } : {}),
   };
 }
 
