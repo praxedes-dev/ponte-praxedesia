@@ -104,7 +104,7 @@ export const TOOLS = [
   {
     name: 'browser_entregar_aba',
     description:
-      'Chame ISTO ao terminar uma tarefa que para esperando o Dr. Cezar — ele que assina, confere ou '
+      'Chame ISTO ao terminar uma tarefa que para esperando o usuário — ele que assina, confere ou '
       + 'decide o proximo passo (ex.: cadastro de peticao pronto no PJe, faltando so o botao de '
       + 'assinar). SEM ISTO, a faxina por ociosidade FECHA a aba depois de 5 minutos parado, e o '
       + 'trabalho pronto some. A aba entregue sai do seu controle (nenhuma faxina, bridge_limpar ou '
@@ -130,7 +130,7 @@ export const TOOLS = [
     description:
       'USO DE TESTE — fecha qualquer aba pelo tabId, sem checar dono. Nunca use isto em atendimento '
       + 'normal; e so para o teste de browser_entregar_aba limpar a aba de teste que entregou, sem '
-      + 'deixar lixo na janela do Dr. Cezar.',
+      + 'deixar lixo na janela do usuário.',
     inputSchema: {
       type: 'object',
       properties: { tabId: { type: 'number' } },

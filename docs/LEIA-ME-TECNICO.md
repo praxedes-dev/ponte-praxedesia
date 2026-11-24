@@ -81,7 +81,7 @@ O servidor MCP roda no Windows e **tem disco** — extensão nenhuma tem. Daí v
 
 | Tool | Para quê |
 |---|---|
-| `browser_upload_file` | Anexar PDF do `H:\Meu Drive\...` direto no PJe |
+| `browser_upload_file` | Anexar um arquivo do disco direto num formulário do site |
 | `browser_download` | Baixar com a sessão logada, gravando onde você escolher |
 | `browser_save_pdf` | Comprovante de protocolo em PDF de verdade, não print |
 | `browser_cookies` | Exportar a sessão como header pronto para `curl` |

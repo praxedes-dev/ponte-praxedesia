@@ -1,5 +1,6 @@
-import { debuggerManager as dm } from '../../debugger-manager';
+import { debuggerManager as dm, siteSimples } from '../../debugger-manager';
 import type { ModuloCapacidades } from './registro';
+import { TEXTOS_DESTRUTIVOS, hostFinanceiro } from '../policy';
 
 /**
  * Roda JS na pagina e devolve o retorno.
@@ -54,7 +55,7 @@ import type { ModuloCapacidades } from './registro';
  * ── Obra 20 — docs/obra-20260904/20-javascript-fura-o-modo-somente-leitura.md ──
  *
  * `cap_js` nao entrava em `nomesQueAlteram()` (nunca declarou `altera`), entao
- * `document.querySelector('form').submit()` rodava liso na aba do Dr. Cezar
+ * `document.querySelector('form').submit()` rodava liso na aba do usuário
  * mesmo em modo leitura — o furo mais largo da barreira. Marcar `altera: true`
  * incondicional consertaria isso, mas bloquearia TODO `browser_javascript` na
  * aba dele, leitura pura inclusa — e "olha isso aqui" e leitura.
@@ -67,7 +68,7 @@ import type { ModuloCapacidades } from './registro';
  * de efeito colateral" e ABORTA antes de qualquer escrita observavel, com uma
  * excecao propria, em vez de deixar o efeito acontecer.
  *
- * MEDIDO na ponte de verdade em 05/09/2026 (aba-cobaia, nunca a do Cezar —
+ * MEDIDO na ponte de verdade em 05/09/2026 (aba-cobaia, nunca a do usuário —
  * ver bridge-server/test/js-somente-leitura.js), 10 casos:
  *
  *   - leitura pura (`document.title`) — PASSA, devolve o valor normal.
@@ -90,7 +91,7 @@ import type { ModuloCapacidades } from './registro';
  *
  *     CUSTO disto, que nao estava escrito em lugar nenhum ate agora: como
  *     QUALQUER `await` aborta (nao so um `await` que precede escrita),
- *     NENHUM JS assincrono que use `await` funciona na aba do Dr. Cezar em
+ *     NENHUM JS assincrono que use `await` funciona na aba do usuário em
  *     modo somente leitura — nem um `await` de LEITURA pura (por exemplo
  *     `await fetch(url).then(r => r.json())` so para ler algo da rede, ou
  *     qualquer `await` numa Promise que so espera um timer). Quem for usar
@@ -137,7 +138,7 @@ type ExceptionDetails = {
  * Obra 16 (docs/obra-20260904/16-timeout-configuravel.md), REDESENHADA em
  * 06/09/2026 depois de o cetico medir e reprovar a primeira versao.
  *
- * MEDIDO na ponte de verdade (Chrome do Dr. Cezar), tres vezes, sempre igual:
+ * MEDIDO na ponte de verdade (Chrome do usuário), tres vezes, sempre igual:
  *
  *   browser_javascript({ codigo: 'new Promise(r => setTimeout(() => r(1), 3000))', timeout_ms: 1000 })
  *
@@ -211,6 +212,7 @@ async function marcarExecucao(
   idExec: string,
   campos: { inicio?: number; fim?: number | null; ok?: boolean | null; erro?: string },
 ): Promise<void> {
+  if (await siteSimples(tabId)) return; // modo simples: nenhuma marca na pagina
   try {
     await dm.send(tabId, 'Runtime.evaluate', {
       expression: `(function(){
@@ -497,15 +499,232 @@ async function executarComArgs(
  * entra em `args` (o CDP faz o transporte via `arguments: [{value}]`, que
  * exige isso).
  */
+async function executarJsSemFreio(
+  tabId: number,
+  codigo: string,
+  emSomenteLeitura: boolean,
+  args?: unknown[],
+  timeoutMs?: number,
+): Promise<unknown> {
+  if (args === undefined) return executarSemArgs(tabId, codigo, emSomenteLeitura, timeoutMs);
+  return executarComArgs(tabId, codigo, emSomenteLeitura, args, timeoutMs);
+}
+
+/**
+ * ── S1 (20/10/2026): o JS tambem passa pelo freio ──────────────────────────
+ *
+ * MEDIDO antes deste conserto (test/js-freio.js, fixture em 127.0.0.1): com a
+ * aba do PROPRIO agente, `browser_javascript` com
+ * `document.querySelector('#assinar').click()` clicava no botao "Assinar" sem
+ * pedir confirmacao — o freio (policy.ts) so julga `click`/`type`/... e `cap_js`
+ * decide so por CONTEUDO na aba do usuario (throwOnSideEffect). Nao existia
+ * `confirm:true` para o JS.
+ *
+ * O conserto e um guarda em tempo de execucao, ligado so durante o script do
+ * agente: troca `HTMLElement.prototype.click`, `HTMLFormElement.prototype
+ * .submit/requestSubmit` e `EventTarget.prototype.dispatchEvent` (so eventos de
+ * clique/envio em elemento) por versoes que olham o elemento — o MESMO criterio
+ * do clique (`TEXTOS_DESTRUTIVOS`, texto visivel OU aria-label, aba nao conta,
+ * agora sem diferenciar acento) — e LANCAM `[bloqueado]` sem confirm. Em site
+ * financeiro, qualquer um desses disparos exige confirm (regra 3 do freio).
+ * Leitura, extracao, scroll, querySelector, getBoundingClientRect... nao tocam
+ * em nada disto.
+ *
+ * Limites, ditos de frente: o guarda protege contra o erro do agente, nao
+ * contra um script feito para fugir (um iframe novo traz o `click` nativo;
+ * `el.onclick()` chamado direto, `location=`, `fetch(POST)` nao passam por
+ * aqui). Esses ficam como estavam.
+ *
+ * Aplica-se so quando `freio` e passado (cap_js). As demais capacidades que
+ * reaproveitam `executarJs` (autocomplete, upload-lote, download) clicam de
+ * proposito e ja tem o freio delas — nao levam o guarda. Na aba do usuario em
+ * somente leitura o V8 ja aborta a escrita (obra 20); o guarda nao liga ali.
+ */
+export interface FreioDoJs {
+  /** `confirm: true` no comando — o agente ja perguntou ao usuario. */
+  confirmado: boolean;
+}
+
+const SCRIPT_FREIO = String.raw`(function (cfg) {
+  var W = window, K = '__ponteFreio';
+  var est = W[K];
+  if (est) { est.n++; est.cfg.confirmado = est.cfg.confirmado && cfg.confirmado; return 'reusado'; }
+  est = W[K] = { n: 1, cfg: cfg, bloqueios: [], orig: [] };
+  var norm = function (s) {
+    return String(s == null ? '' : s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  };
+  var BOTAO = ['button', 'submit', 'image', 'reset'];
+  var rotulos = function (c) {
+    var r = [];
+    var tipo = c.type ? String(c.type).toLowerCase() : '';
+    if (c.tagName !== 'INPUT' || BOTAO.indexOf(tipo) >= 0) {
+      r.push(c.innerText); r.push(c.tagName === 'INPUT' ? c.value : '');
+    }
+    r.push(c.getAttribute && c.getAttribute('aria-label'));
+    r.push(c.getAttribute && c.getAttribute('title'));
+    return r.filter(function (x) { return x && String(x).trim(); });
+  };
+  // Aba nao e a acao que o texto dela cita ("PROTOCOLAR INICIAL" no PJe): mesma
+  // prova do clique (execution-engine/index.ts, ehAba) -- cabecalho de aba
+  // (role tab/tablist ou classe rich-tab*) ou ancora de navegacao, desde que o
+  // clicavel nao seja botao/submit, nao tenha onclick e nao esteja num form.
+  var ehAba = function (c) {
+    var tipo = c.type ? String(c.type).toLowerCase() : '';
+    var acao = c.tagName === 'BUTTON' || (c.tagName === 'INPUT' && BOTAO.indexOf(tipo) >= 0)
+      || (c.getAttribute('role') || '').toLowerCase() === 'button';
+    if (acao || c.hasAttribute('onclick') || typeof c.onclick === 'function' || (c.closest && c.closest('form'))) return false;
+    for (var no = c; no && no !== document.body; no = no.parentElement) {
+      var r = ((no.getAttribute && no.getAttribute('role')) || '').toLowerCase();
+      if (r === 'tab' || r === 'tablist') return true;
+      var cl = no.classList || [];
+      for (var k = 0; k < cl.length; k++) {
+        if (cl[k] === 'rich-tab' || cl[k].indexOf('rich-tab-header') === 0 || cl[k].indexOf('rich-tabhdr') === 0) return true;
+      }
+    }
+    var href = ((c.getAttribute && c.getAttribute('href')) || '').trim().toLowerCase();
+    return c.tagName === 'A' && href.indexOf('javascript:') !== 0;
+  };
+  var gatilhoDe = function (el) {
+    if (!el || el.nodeType !== 1) return null;
+    var c = el.closest ? (el.closest('button,a,[role="button"],input,summary,[onclick]') || el) : el;
+    if (ehAba(c)) return null;
+    var rs = rotulos(c);
+    // Liberado pelo usuário (22/10/2026): "Protocolar Inicial" no PJe do TJ-RO
+    // so abre o resumo; texto exato e host (policy.ts, LIBERADOS_POR_SITE).
+    var hostAqui = String(location.hostname || '').toLowerCase();
+    if ((hostAqui === 'tjro.jus.br' || /\.tjro\.jus\.br$/.test(hostAqui)) && rs.length
+      && rs.every(function (x) { return norm(x).trim().replace(/\s+/g, ' ') === 'protocolar inicial'; })) return null;
+    for (var i = 0; i < rs.length; i++) {
+      var t = norm(rs[i]);
+      for (var j = 0; j < cfg.destrutivos.length; j++) {
+        if (t.indexOf(cfg.destrutivos[j]) >= 0) {
+          return { texto: String(rs[i]).trim().slice(0, 80), gatilho: cfg.destrutivos[j] };
+        }
+      }
+    }
+    return null;
+  };
+  var botoesDoForm = function (f) {
+    return Array.prototype.slice.call(f.querySelectorAll('button:not([type]),button[type="submit"],input[type="submit"],input[type="image"]'));
+  };
+  var barrar = function (como, el, achado) {
+    var onde = el && el.tagName ? el.tagName.toLowerCase() : 'elemento';
+    var motivo = achado
+      ? como + ' em "' + achado.texto + '" (' + onde + ') parece irreversivel (casou com "' + achado.gatilho + '")'
+      : como + ' dentro de ' + est.cfg.financeiro + ', que e banco ou meio de pagamento';
+    est.bloqueios.push(motivo);
+    throw new Error('[bloqueado] ' + motivo + '. Confirme com o usuario e repita browser_javascript com confirm: true.');
+  };
+  var julgar = function (como, el, alvos) {
+    if (est.cfg.confirmado) return;
+    if (est.cfg.financeiro) barrar(como, el, null);
+    var lista = alvos || [el];
+    for (var i = 0; i < lista.length; i++) {
+      var a = gatilhoDe(lista[i]);
+      if (a) barrar(como, lista[i], a);
+    }
+  };
+  var trocar = function (obj, nome, fazer) {
+    var orig = obj[nome];
+    if (typeof orig !== 'function') return;
+    est.orig.push([obj, nome, orig]);
+    obj[nome] = fazer(orig);
+  };
+  trocar(HTMLElement.prototype, 'click', function (orig) {
+    return function () { julgar('click()', this); return orig.apply(this, arguments); };
+  });
+  trocar(HTMLFormElement.prototype, 'submit', function (orig) {
+    return function () { julgar('form.submit()', this, botoesDoForm(this)); return orig.apply(this, arguments); };
+  });
+  trocar(HTMLFormElement.prototype, 'requestSubmit', function (orig) {
+    return function (sub) {
+      julgar('form.requestSubmit()', this, sub ? [sub] : botoesDoForm(this));
+      return orig.apply(this, arguments);
+    };
+  });
+  var EVENTOS = /^(click|dblclick|auxclick|mousedown|mouseup|pointerdown|pointerup)$/;
+  trocar(EventTarget.prototype, 'dispatchEvent', function (orig) {
+    return function (ev) {
+      if (ev && this && this.nodeType === 1) {
+        if (EVENTOS.test(ev.type)) julgar('dispatchEvent(' + ev.type + ')', this);
+        else if (ev.type === 'submit' && this.tagName === 'FORM') julgar('dispatchEvent(submit)', this, botoesDoForm(this));
+      }
+      return orig.apply(this, arguments);
+    };
+  });
+  return 'instalado';
+})`;
+
+async function instalarFreioDoJs(tabId: number, freio: FreioDoJs): Promise<void> {
+  const url = await chrome.tabs.get(tabId).then((t) => t.url).catch(() => undefined);
+  const cfg = {
+    destrutivos: TEXTOS_DESTRUTIVOS,
+    confirmado: freio.confirmado,
+    financeiro: hostFinanceiro(url),
+  };
+  // Se a instalacao falhar o erro sobe e o script nao roda: falha FECHADO.
+  await dm.send(tabId, 'Runtime.evaluate', {
+    expression: `${SCRIPT_FREIO}(${JSON.stringify(cfg)})`,
+    returnByValue: true,
+  });
+}
+
+/** Desliga o guarda (se for o ultimo script) e devolve o que ele barrou. */
+async function retirarFreioDoJs(tabId: number): Promise<string[]> {
+  try {
+    const r = await dm.send<{ result?: { value?: string[] } }>(tabId, 'Runtime.evaluate', {
+      expression: `(function(){
+        var e = window.__ponteFreio; if (!e) return [];
+        var b = e.bloqueios.slice(); e.bloqueios.length = 0;
+        if (--e.n <= 0) {
+          e.orig.forEach(function (t) { t[0][t[1]] = t[2]; });
+          delete window.__ponteFreio;
+        }
+        return b;
+      })()`,
+      returnByValue: true,
+    });
+    return r?.result?.value ?? [];
+  } catch (err) {
+    console.warn('[executarJs] nao consegui retirar o guarda do freio (pagina navegou?):', err);
+    return [];
+  }
+}
+
 export async function executarJs(
   tabId: number,
   codigo: string,
   emSomenteLeitura = false,
   args?: unknown[],
   timeoutMs?: number,
+  freio?: FreioDoJs,
 ): Promise<unknown> {
-  if (args === undefined) return executarSemArgs(tabId, codigo, emSomenteLeitura, timeoutMs);
-  return executarComArgs(tabId, codigo, emSomenteLeitura, args, timeoutMs);
+  // Modo simples (Flow): o freio troca click/dispatchEvent do proprio site enquanto roda.
+  if (!freio || emSomenteLeitura || (await siteSimples(tabId))) return executarJsSemFreio(tabId, codigo, emSomenteLeitura, args, timeoutMs);
+
+  await instalarFreioDoJs(tabId, freio);
+  let resultado: unknown;
+  let erro: unknown;
+  let abandonado = false;
+  try {
+    resultado = await executarJsSemFreio(tabId, codigo, emSomenteLeitura, args, timeoutMs);
+  } catch (err) {
+    erro = err;
+    // Estourou o prazo mas o script segue na pagina: deixa o guarda LIGADO.
+    abandonado = ehEstouroDeTimeout(err);
+  }
+  const barrados = abandonado ? [] : await retirarFreioDoJs(tabId);
+  // O script pode ter engolido o erro do guarda (try/catch) e seguido: o agente
+  // precisa saber que um clique NAO aconteceu, mesmo com o retorno "ok".
+  if (barrados.length > 0 && !(erro instanceof Error && erro.message.includes('[bloqueado]'))) {
+    throw new Error(
+      `[bloqueado] o script tentou ${barrados[0]}${barrados.length > 1 ? ` (+${barrados.length - 1})` : ''}; `
+      + 'o freio barrou esse disparo (o resto do script rodou). Confirme com o usuario e repita '
+      + 'browser_javascript com confirm: true.',
+    );
+  }
+  if (erro) throw erro;
+  return resultado;
 }
 
 export const modulo: ModuloCapacidades = {
@@ -525,6 +744,7 @@ export const modulo: ModuloCapacidades = {
         ctx.emSomenteLeitura,
         ctx.params.args,
         (ctx.params.timeout_ms as number | undefined) ?? 55_000,
+        { confirmado: ctx.confirm === true },
       ),
     },
     {

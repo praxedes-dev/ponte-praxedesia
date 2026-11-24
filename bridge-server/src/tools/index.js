@@ -41,12 +41,14 @@ import { TOOLS as AUDITORIA } from './auditoria.js';
 // Obra 22 (acrescentada em 05/09/2026, fora dos 17 itens originais — por isso
 // nao ganhou stub da obra 01): canal de feedback do agente. Ver feedback.js.
 import { TOOLS as FEEDBACK } from './feedback.js';
+// v6.1 (f): esperar a decisao do usuário por notificacao (ver decisao.js).
+import { TOOLS as DECISAO } from './decisao.js';
 
 export const TOOLS = [
   ...NAVEGACAO, ...INTERACAO, ...LEITURA, ...DIAGNOSTICO, ...ESPERA,
   ...JS, ...FORMULARIO, ...ARQUIVOS, ...EMULACAO, ...PONTE,
   ...DIALOGO, ...UPLOAD_LOTE, ...AUTOCOMPLETE, ...FORMULARIO_LOTE, ...ABAS_FILHAS,
-  ...DOWNLOAD_NATIVO, ...REDE_INSPECAO, ...HISTORICO, ...AUDITORIA, ...FEEDBACK,
+  ...DOWNLOAD_NATIVO, ...REDE_INSPECAO, ...HISTORICO, ...AUDITORIA, ...FEEDBACK, ...DECISAO,
 ];
 
 /**

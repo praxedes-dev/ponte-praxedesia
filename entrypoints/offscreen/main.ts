@@ -3,19 +3,12 @@
  * Manifest V3's 30-second Service Worker idle timeout.
  *
  * Responsibilities:
- * 1. SW Keepalive: pings the service worker every 20 s to reset its idle timer.
+ * 1. (removido) Keepalive do SW: quem mantem o SW vivo e o WebSocket da ponte.
  * 2. Audio playback for notification sounds via Web Audio API.
  * 3. GIF generation with action overlays (clicks, drags, labels).
  */
 
 console.log('[Offscreen] Document loaded and ready');
-
-// ═══════════════════════════════════════════════════════════════════════
-// 1. SW KEEPALIVE
-// ═══════════════════════════════════════════════════════════════════════
-setInterval(() => {
-  chrome.runtime.sendMessage({ type: 'SW_KEEPALIVE' }).catch(() => {});
-}, 20_000);
 
 // ═══════════════════════════════════════════════════════════════════════
 // 2. WEB AUDIO — NOTIFICATION SOUND

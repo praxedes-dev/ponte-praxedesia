@@ -14,28 +14,57 @@ const PADRAO_MAX_CHARS = 8000;
 
 /** Uma linha por elemento clicavel, com o ref que o click aceita. */
 function linhaDeElemento(el) {
-  // Elemento de moldura de outro site nao tem ref: so a coordenada (x,y).
-  const partes = [el.moldura ? `  [x,y ${el.moldura}] ${el.role}` : `  [${el.agentId}] ${el.role}`];
+  // Moldura de outro site: ref f<n>:<id> (L5) quando lida por sessao filha; sem ref (mesmo processo), so a coordenada.
+  const partes = [el.moldura ? (el.ref ? `  [${el.ref} ${el.moldura}] ${el.role}` : `  [x,y ${el.moldura}] ${el.role}`) : `  [${el.agentId}] ${el.role}`];
   if (el.text) partes.push(` "${el.text}"`);
+  if (el.secreto) partes.push(' [valor oculto]');
   if (el.placeholder) partes.push(` placeholder="${el.placeholder}"`);
   if (el.href) partes.push(` -> ${el.href}`);
-  if (el.rect?.w > 0) {
+  if (el.rect?.w > 0 && !el.foraDaVista) {
     partes.push(` (${Math.round(el.rect.x + el.rect.w / 2)},${Math.round(el.rect.y + el.rect.h / 2)})`);
   }
-  if (el.foraDaVista) partes.push(' FORA DA VISTA: role a pagina (browser_scroll) e releia antes de clicar');
+  if (el.foraDaVista) partes.push(' [fora]');
   return partes.join('');
 }
 
 // `page.aviso` vem da obra 09 (capacidades/desafio.ts, gancho "depois"): a
 // pagina tem um captcha no proprio formulario (nao a pagina inteira, que
 // viraria erro antes de chegar aqui) — uma linha logo abaixo do cabecalho.
-const cabecalho = (page) => `${page.url}\n${page.title}${page.aviso ? `\n[aviso] ${page.aviso}` : ''}`;
+const cabecalho = (page) => `${page.url}\n${page.title}${page.aviso ? `\n[aviso] ${page.aviso}` : ''}`
+  // B3: a extensao cortou nos fundos demais (ax-tree.ts) -- o agente precisa saber que a leitura nao e total.
+  + `${page.avisoProfundidade ? `\n[aviso] ${page.avisoProfundidade}` : ''}`
+  // Fase 4: escopo sem resultado, itens omitidos, pagina trocou durante a leitura.
+  + `${page.avisoLeitura ? `\n[aviso] ${page.avisoLeitura}` : ''}`;
+
+/** Uma linha so, no cabecalho, para as marcas "[fora]" (antes cada linha repetia a explicacao). */
+const notaForaDaVista = (els) => {
+  const n = els.filter((e) => e.foraDaVista).length;
+  return n ? `\n[aviso] ${n} elemento(s) [fora]: browser_scroll ate eles e releia antes de clicar` : '';
+};
+
+/** `moldura`: so o conteudo das molduras cujo host contem o texto (L2); a pagina principal sai da leitura. */
+function soMoldura(page, host) {
+  const alvo = String(host).toLowerCase();
+  const m = page.molduras;
+  const els = (m?.elementos ?? []).filter((e) => String(e.moldura).toLowerCase().includes(alvo));
+  const hosts = [...new Set((m?.elementos ?? []).map((e) => e.moldura))];
+  const aviso = els.length ? '' : `nenhuma moldura com host "${host}". Molduras lidas: ${hosts.join(', ') || '(nenhuma)'}`;
+  return {
+    ...page,
+    interactiveElements: [],
+    textContent: '',
+    accessibilityTree: '',
+    avisoLeitura: [page.avisoLeitura, aviso].filter(Boolean).join('; '),
+    molduras: { elementos: els, ilegiveis: m?.ilegiveis ?? [] },
+  };
+}
 
 /**
  * `mode: 'interactive'` (padrao) devolve so o que da para clicar ou preencher.
  * `mode: 'full'` devolve a arvore semantica inteira, paginada.
  */
-export function formatarPagina(page, input = {}) {
+export function formatarPagina(pageBruta, input = {}) {
+  const page = input.moldura ? soMoldura(pageBruta, input.moldura) : pageBruta;
   const modo = input.mode || 'interactive';
   const maxChars = input.max_chars ?? PADRAO_MAX_CHARS;
   const offset = input.offset ?? 0;
@@ -43,18 +72,19 @@ export function formatarPagina(page, input = {}) {
   if (modo === 'interactive') {
     const els = page.interactiveElements ?? [];
     const mold = secaoMolduras(page);
-    if (!els.length && mold) return cortar(`${cabecalho(page)}${mold}`, maxChars, 0, 'browser_read_page com offset');
+    if (!els.length && mold) return cortar(`${cabecalho(page)}${mold}`, maxChars, offset, 'browser_read_page com offset');
     if (!els.length) {
       return `${cabecalho(page)}\n\nNenhum elemento interativo encontrado. `
         + `Use mode "full" para ver a arvore da pagina, ou browser_extract para o texto.`;
     }
     const linhas = els.map(linhaDeElemento).join('\n');
-    const corpo = `${cabecalho(page)}\n\n${els.length} elementos interativos:\n${linhas}${mold}`;
-    return cortar(corpo, maxChars, 0, 'browser_read_page com offset');
+    const corpo = `${cabecalho(page)}${notaForaDaVista([...els, ...(page.molduras?.elementos ?? [])])}\n\n${els.length} elementos interativos:\n${linhas}${mold}`;
+    return cortar(corpo, maxChars, offset, 'browser_read_page com offset');
   }
 
   const arvore = page.textContent || page.accessibilityTree || '';
-  const corpo = `${cabecalho(page)}\n\n${arvore}${secaoMolduras(page)}`;
+  const temFora = /\[fora\]$/m.test(arvore) ? '\n[aviso] linhas com [fora] estao fora da janela: browser_scroll ate elas e releia antes de clicar' : '';
+  const corpo = `${cabecalho(page)}${temFora}\n\n${arvore}${secaoMolduras(page)}`;
   return cortar(corpo, maxChars, offset, 'browser_read_page com offset');
 }
 
@@ -67,9 +97,9 @@ export function formatarPagina(page, input = {}) {
 function secaoMolduras(page) {
   const m = page.molduras;
   if (!m || (!m.elementos?.length && !m.ilegiveis?.length)) return '';
-  let t = `\n\nDENTRO DE MOLDURAS DE OUTRO SITE (${m.elementos?.length ?? 0}) -- sem ref: clique com `
-    + 'browser_click {x,y} na coordenada da linha; para digitar, clique no campo e use browser_type '
-    + 'sem ref (vai para o campo focado):\n';
+  let t = `\n\nDENTRO DE MOLDURAS DE OUTRO SITE (${m.elementos?.length ?? 0}) -- linha com ref f<n>:<id>: browser_click / browser_type com ref_moldura (o freio julga o botao de la de dentro); `
+    + 'linha [x,y] (mesmo site): browser_click {x,y} na coordenada e, para digitar, clique no campo e use browser_type '
+    + 'sem ref:\n';
   t += (m.elementos ?? []).map(linhaDeElemento).join('\n');
   if (m.ilegiveis?.length) t += `\n  molduras que nao deu para ler: ${m.ilegiveis.join('; ')}`;
   return t;

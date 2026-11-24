@@ -3,7 +3,8 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-export const CONFIG_DIR = join(homedir(), '.praxedes-bridge');
+// v6: pasta propria, para o token da v6 nao colidir com o da v5 (~/.praxedes-bridge).
+export const CONFIG_DIR = join(homedir(), '.praxedes-bridge-v6');
 const TOKEN_FILE = join(CONFIG_DIR, 'token');
 
 /**

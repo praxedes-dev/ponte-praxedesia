@@ -1,6 +1,6 @@
 import { focoEmMoldura } from '../../execution-engine/molduras';
 import { debuggerManager as dm } from '../../debugger-manager';
-import { cdpPressKey } from '../../execution-engine/cdp-tools';
+import { cdpPressKey, aguardarFocoAssentado } from '../../execution-engine/cdp-tools';
 import { resolverAlvoDaAcao, type AlvoResolvido } from '../../execution-engine';
 import { avaliar } from '../policy';
 import type { ModuloCapacidades } from './registro';
@@ -200,7 +200,8 @@ export async function digitarTeclaATecla(
         + 'Confira se o campo esta habilitado e visivel, releia a pagina com browser_read_page e repita.',
       );
     }
-    await new Promise((r) => setTimeout(r, 80));
+    // V1: espera o foco chegar + um quadro (era 80 ms parados); a conferencia abaixo fica.
+    await aguardarFocoAssentado(tabId, backendNodeId, 80);
 
     const focou = await dm.send<{ result?: { value?: boolean } }>(tabId, 'Runtime.callFunctionOn', {
       objectId: (await dm.send<{ object?: { objectId?: string } }>(

@@ -1,12 +1,71 @@
+import { aguardarEstavel } from './espera-estavel';
+import { esperarCondicao } from './espera-condicao';
 import { safeExecuteScript } from './safe-scripting';
 import type { ActionTarget } from '../../../shared/types';
 import { debuggerManager as dm } from '../debugger-manager';
+import { HOSTS_SO_DOM_PADRAO, avaliarAssentamento, criarAcompanhante, hostSoDom, lerContadorDeMutacoes } from './assentamento';
 
 export async function cdpClick(tabId: number, x: number, y: number): Promise<void> {
   const base = { type: 'mouseMoved', x, y, button: 'left' as const, clickCount: 0 };
   await dm.send(tabId, 'Input.dispatchMouseEvent', base);
   await dm.send(tabId, 'Input.dispatchMouseEvent', { ...base, type: 'mousePressed', clickCount: 1 });
   await dm.send(tabId, 'Input.dispatchMouseEvent', { ...base, type: 'mouseReleased', clickCount: 1 });
+}
+
+/**
+ * V1: "um quadro" no lugar de um sleep. Espera o proximo requestAnimationFrame da
+ * pagina, mas com teto do LADO DA EXTENSAO: aba escondida/janela minimizada nao
+ * pinta e o rAF nunca dispara, entao o teto garante que isto nunca custa mais do
+ * que o tempo fixo que substitui.
+ */
+export async function umQuadro(tabId: number, tetoMs = 50): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      dm.send(tabId, 'Runtime.evaluate', {
+        expression: 'new Promise(function (r) { requestAnimationFrame(function () { r(1); }); })',
+        awaitPromise: true,
+      }).catch(() => {}),
+      new Promise<void>((r) => { timer = setTimeout(r, tetoMs); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+const FOCO_NO_ALVO = 'function() { var a = document.activeElement; return a === this || (!!a && this.contains(a)) || (!!a && a.contains(this) && a.isContentEditable); }';
+
+/**
+ * V1: no lugar de "dorme 80/150 ms depois de focar". Espera o foco CHEGAR no
+ * campo (poll 30 ms, ate `tetoMs`); com o foco confirmado espera um quadro e
+ * confere DE NOVO — editor que re-renderiza ao ganhar foco (ProseMirror,
+ * contenteditable do PJe) pode soltar o foco no quadro seguinte, e so o que
+ * continua focado depois dele conta. Devolve se terminou focado; quem chama
+ * segue de qualquer jeito (a conferencia de foco/leitura de volta continua
+ * logo depois, como estava) — no pior caso custa o mesmo tempo fixo de antes.
+ */
+export async function aguardarFocoAssentado(
+  tabId: number,
+  backendNodeId: number,
+  tetoMs: number,
+): Promise<boolean> {
+  const focado = async (): Promise<boolean> => {
+    const o = await dm.send<{ object?: { objectId?: string } }>(tabId, 'DOM.resolveNode', { backendNodeId });
+    const objectId = o?.object?.objectId;
+    if (!objectId) return false;
+    const r = await dm.send<{ result?: { value?: boolean } }>(tabId, 'Runtime.callFunctionOn', {
+      objectId, returnByValue: true, functionDeclaration: FOCO_NO_ALVO,
+    });
+    return r?.result?.value === true;
+  };
+  const inicio = Date.now();
+  const { ok } = await esperarCondicao(async () => {
+    if (!(await focado())) return false;
+    const restante = Math.max(20, tetoMs - (Date.now() - inicio));
+    await umQuadro(tabId, Math.min(50, restante));
+    return focado();
+  }, { intervaloMs: 30, tetoMs });
+  return ok;
 }
 
 export async function cdpType(
@@ -224,18 +283,27 @@ export async function cdpType(
             } catch {}
           }`,
         }).catch(() => {});
-        await new Promise((r) => setTimeout(r, 30));
+        // V1: um quadro para a selecao assentar (era 30 ms fixos) ...
+        await umQuadro(tabId, 30);
         await dm.send(tabId, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 });
         await dm.send(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 });
-        await new Promise((r) => setTimeout(r, 50));
+        // ... e ate o campo ESVAZIAR (era 50 ms fixos). Editor com texto de
+        // enchimento que nunca zera cai no teto de 50 ms, igual a antes.
+        await esperarCondicao(async () => {
+          const r = await dm.send<{ result?: { value?: boolean } }>(tabId, 'Runtime.callFunctionOn', {
+            objectId, returnByValue: true,
+            functionDeclaration: 'function() { return (this.textContent || "").length === 0; }',
+          });
+          return r?.result?.value === true;
+        }, { intervaloMs: 15, tetoMs: 50 });
       } else {
         // Fallback when no objectId: Ctrl+A then Backspace (may select whole page on some sites)
         await dm.send(tabId, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers: 2 });
         await dm.send(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers: 2 });
-        await new Promise((r) => setTimeout(r, 50));
+        await umQuadro(tabId, 50);
         await dm.send(tabId, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 });
         await dm.send(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 });
-        await new Promise((r) => setTimeout(r, 50));
+        await umQuadro(tabId, 50);
       }
     }
 
@@ -363,7 +431,7 @@ export async function cdpType(
  *
  * RESSALVA HONESTA DESTA SESSAO: a medicao acima rodou num Chrome PROPRIO,
  * isolado (`puppeteer-core`, headless, processo descartavel — nunca tocou o
- * Chrome do Dr. Cezar nem a extensao/ponte), porque a `.obra-lock` ficou
+ * Chrome do usuário nem a extensao/ponte), porque a `.obra-lock` ficou
  * presa com outro pedreiro (`operador-bancada-final`) pelo tempo inteiro
  * desta sessao (5 tentativas de 60s, nunca liberou). Isso prova a
  * COORDENADA (CDP puro, sem a extensao). NAO prova a integracao com
@@ -396,6 +464,15 @@ async function pontoPertenceAoElemento(
         // Ramo ascendente (el.contains(alvo)) REMOVIDO de proposito — ver o
         // comentario do CONSERTO acima da funcao. Aceitar um ancestral do
         // alvo aqui e aceitar exatamente os casos em que o clique erra.
+        // Ramo ROTULO (22/10/2026, Portal OAB/MUI): radio/checkbox escondido
+        // sob a bolinha desenhada. Clicar em qualquer ponto do <label> do
+        // proprio controle aciona o controle (regra do HTML), desde que o
+        // ponto nao caia em OUTRO controle dentro do rotulo (link, botao...).
+        const labels = alvo.labels ? Array.prototype.slice.call(alvo.labels) : [];
+        if (labels.some(function (l) { return l.contains(el); })) {
+          const outro = el.closest && el.closest('a,button,input,select,textarea,[role=button],[role=link]');
+          if (!outro || outro === alvo) return true;
+        }
         return false;
       }
       for (const p of pontos) {
@@ -646,10 +723,19 @@ async function resolverEClicarPorRef(tabId: number, backendNodeId: number): Prom
   await dm.send(tabId, 'DOM.focus', { backendNodeId }).catch(() => {});
   await dm.send(tabId, 'Runtime.callFunctionOn', {
     objectId,
-    functionDeclaration: 'function() { this.scrollIntoView({ block: "center", inline: "center" }); if (typeof this.focus === "function") this.focus(); }',
+    functionDeclaration: 'function() { this.scrollIntoView({ block: "center", inline: "center", behavior: "instant" }); if (typeof this.focus === "function") this.focus(); }',
   }).catch(() => {});
 
-  await new Promise((r) => setTimeout(r, 150)); // wait for scroll to settle
+  // V2: espera o retangulo assentar (2 leituras iguais, 30 ms, teto 500 ms) em vez de
+  // 150 ms parados. O hit-test e a conferencia mais abaixo continuam como estavam.
+  await aguardarEstavel(async () => {
+    const r = await dm.send<{ result: { value: { x: number; y: number; w: number; h: number } } }>(tabId, 'Runtime.callFunctionOn', {
+      objectId,
+      functionDeclaration: 'function() { const r = this.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; }',
+      returnByValue: true,
+    });
+    return r?.result?.value;
+  }, { intervaloMs: 30, tetoMs: 500 });
 
   // 3a. Fast path: getBoundingClientRect via JS. Pode falhar se o objectId
   // ficou obsoleto entre o resolveNode e aqui (pagina re-renderizou no meio
@@ -830,7 +916,7 @@ async function resolverEClicarPorRef(tabId: number, backendNodeId: number): Prom
  *
  * Existe porque a versao antiga (`cdpClickByRef`, abaixo) engolia toda
  * falha — um `ref` inexistente devolvia `ok:true` sem ter clicado em nada.
- * Nesta ponte isso e grave: o Dr. Cezar opera o PJe por protocolo passo a
+ * Nesta ponte isso e grave: o usuário opera o PJe por protocolo passo a
  * passo, e um "ok" que mente sobre um clique faz o agente seguir em cima de
  * um passo que nunca aconteceu — por exemplo anexar documento na tela errada
  * sem ninguem descobrir na hora (obra 24, 05/09/2026).
@@ -1122,24 +1208,51 @@ export async function cdpDrag(
  */
 export const LONGA_MS = 2000;
 
+/**
+ * X9: janela de silencio mais curta, SO depois do `load` e SO enquanto a pagina
+ * nao fez nenhum pedido depois dele. Pagina que continua pedindo coisa depois do
+ * `load` (SPA, hidratacao, AJAX de inicializacao do PJe) volta para a janela
+ * inteira de `idleThresholdMs` — a mesma de antes.
+ */
+export const SILENCIO_POS_LOAD_MS = 250;
+
 export async function waitForNetworkIdle(
   tabId: number,
-  options?: { maxWaitMs?: number; idleThresholdMs?: number },
+  options?: { maxWaitMs?: number; idleThresholdMs?: number; silencioCurtoPosLoad?: boolean; soDom?: boolean },
 ): Promise<void> {
   const maxWait = options?.maxWaitMs ?? 15000;
   const idleThreshold = options?.idleThresholdMs ?? 500;
+  const curto = options?.silencioCurtoPosLoad === true;
+  // v6.1 (c): site de conexao viva (Gmail, WhatsApp Web) nunca zera a rede: so o DOM conta, com teto proprio.
+  const soDom = options?.soDom === true;
   const inicio = Date.now();
 
   const emVoo = new Map<string, number>();
   let pintou = false;
+  let carregou = false;
+  let pedidoPosLoad = false;
   let ultimaAtividade = Date.now();
+  // v6.1 (c): mudancas de DOM contam como atividade (ver assentamento.ts).
+  const acompanhante = criarAcompanhante({ documentoNovoConta: false });
+  let mutacoes = 0;
+  let ultimaMutacao = inicio;
+  let redeAssentouEm: number | undefined;
+  const sondarDom = async () => {
+    const n = await lerContadorDeMutacoes((metodo, params) => dm.send(tabId, metodo, params));
+    if (acompanhante.registrar(n)) { mutacoes += 1; ultimaMutacao = Date.now(); }
+  };
 
-  const onReq = (p: any) => { emVoo.set(String(p.requestId), Date.now()); ultimaAtividade = Date.now(); };
+  const onReq = (p: any) => {
+    emVoo.set(String(p.requestId), Date.now());
+    ultimaAtividade = Date.now();
+    if (carregou) pedidoPosLoad = true;
+  };
   const onFim = (p: any) => {
     if (emVoo.delete(String(p.requestId))) ultimaAtividade = Date.now();
   };
   const onLifecycle = (p: any) => {
     if (p.name === 'firstContentfulPaint' || p.name === 'load' || p.name === 'DOMContentLoaded') pintou = true;
+    if (p.name === 'load') carregou = true;
   };
 
   const offs = [
@@ -1154,19 +1267,54 @@ export async function waitForNetworkIdle(
     for (;;) {
       const agora = Date.now();
       if (agora - inicio >= maxWait) return;
+      if (soDom && agora - inicio >= TETO_SO_DOM_MS) return;
+      await sondarDom();
       let recentes = 0;
       for (const t of emVoo.values()) if (agora - t < LONGA_MS) recentes += 1;
-      if (pintou && recentes === 0 && agora - ultimaAtividade >= idleThreshold) return;
-      await new Promise((r) => setTimeout(r, 100));
+      const silencio = curto && carregou && !pedidoPosLoad ? Math.min(idleThreshold, SILENCIO_POS_LOAD_MS) : idleThreshold;
+      const v = avaliarAssentamento({
+        agora: Date.now(), armadoEm: inicio, emVooRecentes: recentes, navegou: false, carregou: true,
+        requisicoes: 1, ultimaAtividade, mutacoes, ultimaMutacao, redeAssentouEm,
+      }, { soDom, quietoRedeMs: silencio, quietoSemRedeMs: silencio });
+      if (pintou && v.redeAssentou && redeAssentouEm === undefined) redeAssentouEm = Date.now();
+      if (pintou && v.assentou) return;
+      await new Promise((r) => setTimeout(r, curto ? 50 : 100));
     }
   } finally {
     for (const off of offs) off();
   }
 }
 
+/** Teto da espera so-DOM na navegacao (host de conexao viva): nao faz sentido esperar os 15 s da rede. */
+const TETO_SO_DOM_MS = 6000;
+
+async function hostsSoDomDaConfig(): Promise<string[]> {
+  try {
+    const { esperaSoDomHosts } = await chrome.storage.local.get('esperaSoDomHosts');
+    return Array.isArray(esperaSoDomHosts) ? (esperaSoDomHosts as string[]) : HOSTS_SO_DOM_PADRAO;
+  } catch {
+    return HOSTS_SO_DOM_PADRAO;
+  }
+}
+
 export async function cdpNavigate(tabId: number, url: string): Promise<void> {
-  await dm.send(tabId, 'Page.navigate', { url });
-  await waitForNetworkIdle(tabId);
+  // Indo para site do modo simples (Flow) com a aba ja anexada: desliga o que
+  // foi ligado antes, em outro site (ver debugger-manager, HOSTS_SIMPLES).
+  if (/^https:\/\/(flow\.google\.com|labs\.google)\//.test(url)) {
+    for (const m of ['Fetch.disable', 'Network.disable', 'Runtime.disable']) await dm.send(tabId, m, {}).catch(() => {});
+  }
+  // Com muitos agentes no Chrome (01/11/2026, 8 abas no Flow) o Page.navigate
+  // chegou a nao responder e o comando estourava 90 s. Sem resposta em 20 s:
+  // se a aba ja esta no endereco, segue; senao navega pela API de abas.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const prazo = new Promise<'prazo'>((r) => { timer = setTimeout(() => r('prazo'), 20_000); });
+  const r = await Promise.race([dm.send(tabId, 'Page.navigate', { url }), prazo]).finally(() => clearTimeout(timer));
+  if (r === 'prazo') {
+    const aba = await chrome.tabs.get(tabId);
+    const atual = aba.pendingUrl || aba.url || '';
+    if (!atual.startsWith(url.split('#')[0])) await chrome.tabs.update(tabId, { url });
+  }
+  await waitForNetworkIdle(tabId, { silencioCurtoPosLoad: true, soDom: hostSoDom(url, await hostsSoDomDaConfig()) });
 }
 
 async function getViewport(tabId: number): Promise<{ width: number; height: number }> {
@@ -1280,16 +1428,100 @@ export async function resolveTarget(
 
   const result = await safeExecuteScript({
     target: { tabId },
-    func: (role: string, searchText: string, placeholder: string, ariaLabel: string) => {
+    func: async (role: string, searchText: string, placeholder: string, ariaLabel: string, exato: boolean) => {
       const selectors =
         'a,button,input,textarea,select,[role],[tabindex],[contenteditable="true"],[contenteditable=""]';
       const seen = new Set<Element>();
+      // Elemento FORA da vista (abaixo da dobra, janela minimizada) tambem e
+      // candidato: o que exclui e display:none/visibility:hidden/tamanho zero.
+      // Com a viewport zerada (janela minimizada) nao ha tamanho para medir,
+      // entao so vale checkVisibility; a posicao sai do scrollIntoView abaixo.
+      const semViewport = window.innerWidth === 0 || window.innerHeight === 0;
       const elements = Array.from(document.querySelectorAll(selectors)).filter((el) => {
         if (seen.has(el)) return false;
         seen.add(el);
+        const visivel = (el as HTMLElement).checkVisibility
+          ? (el as HTMLElement).checkVisibility({ visibilityProperty: true } as never)
+          : el.getClientRects().length > 0;
+        if (!visivel) return false;
+        if (semViewport) return true;
         const rect = el.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0;
       });
+      // Papel ARIA implicito: `role:"link"` tem de casar <a href>, como o
+      // browser_find/read_page (arvore de acessibilidade) chamam o elemento.
+      // Antes so valiam o atributo role ou o nome da tag, entao text+role:"link"
+      // nunca achava um <a>.
+      const papeisDoEl = (el: Element): string[] => {
+        const tag = el.tagName.toLowerCase();
+        const lista = [tag];
+        const explicito = el.getAttribute('role');
+        if (explicito) lista.push(explicito.toLowerCase());
+        const tipo = ((el as HTMLInputElement).type || '').toLowerCase();
+        if (tag === 'a' && el.hasAttribute('href')) lista.push('link');
+        else if (tag === 'button') lista.push('button');
+        else if (tag === 'select') lista.push('combobox', 'listbox');
+        else if (tag === 'textarea') lista.push('textbox');
+        else if (/^h[1-6]$/.test(tag)) lista.push('heading');
+        else if (tag === 'img') lista.push('img');
+        else if (tag === 'input') {
+          if (['button', 'submit', 'reset', 'image'].includes(tipo)) lista.push('button');
+          else if (tipo === 'checkbox') lista.push('checkbox');
+          else if (tipo === 'radio') lista.push('radio');
+          else if (tipo === 'range') lista.push('slider');
+          else if (tipo === 'search') lista.push('searchbox', 'textbox');
+          else lista.push('textbox');
+        }
+        return lista;
+      };
+      const casaPapel = (el: Element, pedido: string) => !pedido || papeisDoEl(el).includes(pedido.toLowerCase());
+      // Rola ate o elemento ANTES de medir: o ponto devolvido tem de cair
+      // dentro da viewport, senao o hit-test (DOM.getNodeForLocation) nao acha
+      // no nenhum e o clique por texto falha enquanto o browser_find acha.
+      const centro = async (el: Element) => {
+        (el as HTMLElement).scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' as ScrollBehavior });
+        // Deixa o scroll assentar antes do hit-test do CDP.
+        await new Promise((ok) => setTimeout(ok, 60));
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return null;
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+      };
+
+      // S2 (20/10/2026): `exato:true` casa o NOME inteiro (texto, aria-label ou
+      // placeholder iguais ao pedido, sem diferenciar maiuscula nem espaco
+      // sobrando) e, se mais de um elemento casar, devolve a lista em vez de
+      // escolher o primeiro. Sem `exato` o comportamento e o de sempre: substring,
+      // primeiro candidato.
+      if (exato) {
+        const norm = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+        const alvoTexto = norm(searchText);
+        const alvoPh = norm(placeholder);
+        const alvoAria = norm(ariaLabel);
+        const exatos = elements.filter((el) => {
+          const elRole = el.getAttribute('role') || el.tagName.toLowerCase();
+          const elText = norm((el as HTMLElement).innerText || (el as HTMLInputElement).value || '');
+          const elPlaceholder = norm(el.getAttribute('placeholder') || '');
+          const elAriaLabel = norm(el.getAttribute('aria-label') || '');
+          const roleOk = casaPapel(el, role);
+          const textoOk = !alvoTexto || elText === alvoTexto || elAriaLabel === alvoTexto || elPlaceholder === alvoTexto;
+          const phOk = !alvoPh || elPlaceholder === alvoPh;
+          const ariaOk = !alvoAria || elAriaLabel === alvoAria;
+          return roleOk && textoOk && phOk && ariaOk;
+        });
+        if (exatos.length === 0) return null;
+        if (exatos.length > 1) {
+          return {
+            ambiguos: exatos.slice(0, 8).map((el) => {
+              const r = el.getBoundingClientRect();
+              const nome = ((el as HTMLElement).innerText || (el as HTMLInputElement).value
+                || el.getAttribute('aria-label') || el.getAttribute('placeholder') || '').trim().slice(0, 60);
+              return `${el.getAttribute('role') || el.tagName.toLowerCase()} "${nome}" (${Math.round(r.x + r.width / 2)},${Math.round(r.y + r.height / 2)})`;
+            }),
+            total: exatos.length,
+          };
+        }
+        return await centro(exatos[0]);
+      }
 
       const match = elements.find((el) => {
         const elRole = el.getAttribute('role') || el.tagName.toLowerCase();
@@ -1297,7 +1529,7 @@ export async function resolveTarget(
         const elPlaceholder = el.getAttribute('placeholder') || '';
         const elAriaLabel = el.getAttribute('aria-label') || '';
 
-        const roleMatch = !role || elRole === role || el.tagName.toLowerCase() === role;
+        const roleMatch = casaPapel(el, role);
         const textMatch =
           !searchText ||
           elText.toLowerCase().includes(searchText.toLowerCase()) ||
@@ -1310,10 +1542,36 @@ export async function resolveTarget(
       });
 
       if (!match) return null;
-      const r = match.getBoundingClientRect();
-      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+      return await centro(match);
     },
-    args: [role, text, placeholder, ariaLabel],
+    args: [role, text, placeholder, ariaLabel, target.exato === true],
   });
-  return (result?.[0]?.result as { x: number; y: number } | null) ?? null;
+  const achado = result?.[0]?.result as
+    | { x: number; y: number }
+    | { ambiguos: string[]; total: number }
+    | null
+    | undefined;
+  if (achado && 'ambiguos' in achado) {
+    const criterio = [text && `texto "${text}"`, role && `papel "${role}"`,
+      placeholder && `placeholder "${placeholder}"`, ariaLabel && `aria-label "${ariaLabel}"`]
+      .filter(Boolean).join(', ');
+    throw new AlvoAmbiguoError(
+      `exato:true — ${achado.total} elementos casam exatamente com ${criterio}: `
+      + `${achado.ambiguos.join('; ')}${achado.total > achado.ambiguos.length ? '; ...' : ''}. `
+      + 'Nao cliquei em nenhum. Use a ref de browser_read_page/browser_find, ou acrescente role/placeholder/ariaLabel '
+      + 'para desempatar.',
+    );
+  }
+  return achado ?? null;
+}
+
+/**
+ * Busca semantica com `exato:true` achou MAIS DE UM elemento: o motor nao
+ * escolhe o primeiro, recusa e lista os candidatos (S2, 20/10/2026).
+ */
+export class AlvoAmbiguoError extends Error {
+  constructor(mensagem: string) {
+    super(mensagem);
+    this.name = 'AlvoAmbiguoError';
+  }
 }

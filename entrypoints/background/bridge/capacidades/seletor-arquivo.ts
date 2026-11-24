@@ -2,11 +2,11 @@ import { debuggerManager as dm } from '../../debugger-manager';
 import type { ModuloCapacidades } from './registro';
 
 /**
- * Upload SEM a janela do Windows (30/09/2026, pedido do Dr. Cezar).
+ * Upload SEM a janela do Windows (30/09/2026, pedido do usuário).
  *
  * Em site moderno (Google Flow, Gemini, Drive) o <input type=file> nao existe
  * na pagina: ele nasce no clique de "Enviar" e ja chama o seletor nativo do
- * Windows — que abria NA TELA do Dr. Cezar. A gambiarra (sobrescrever
+ * Windows — que abria NA TELA do usuário. A gambiarra (sobrescrever
  * HTMLInputElement.prototype.click) falhava no primeiro clique da pagina.
  *
  * O jeito certo e do proprio Chrome: `Page.setInterceptFileChooserDialog`.

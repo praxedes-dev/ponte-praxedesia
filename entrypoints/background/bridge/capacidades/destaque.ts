@@ -4,7 +4,7 @@ import type { ContextoCapacidade, ModuloCapacidades, Resultado } from './registr
 /**
  * Contorno visivel de 300ms no elemento que vai ser clicado, antes do clique
  * acontecer — confirmacao visual barata do que o agente vai fazer, para o
- * Dr. Cezar ver na tela dele (ate cinco agentes dividem a mesma janela).
+ * usuário ver na tela dele (ate cinco agentes dividem a mesma janela).
  * Obra 13 (docs/obra-20260904/13-clique-destaque-e-assentar.md).
  *
  * `Overlay` NAO entra nos dominios habilitados no attach() de
@@ -99,8 +99,11 @@ export const modulo: ModuloCapacidades = {
         if (ctx.acao !== 'click' && ctx.acao !== 'cap_click_xy') return;
         if (overlayAtivoPorAba.get(ctx.tabId) !== true) return;
 
+        // Fase 4 (decisao do usuário, 20/10/2026): DESLIGADO por padrao. A ponte roda em janela
+        // minimizada e ele nao precisa ver; cada clique pagava 300 ms parados. Religar:
+        // chrome.storage.local.set({ destacarAntesDeClicar: true }).
         const { destacarAntesDeClicar } = await chrome.storage.local.get('destacarAntesDeClicar');
-        if (destacarAntesDeClicar === false) return;
+        if (destacarAntesDeClicar !== true) return;
 
         const backendNodeId = await backendNodeIdDoAlvo(ctx);
         if (backendNodeId === undefined) return;
@@ -117,7 +120,7 @@ export const modulo: ModuloCapacidades = {
           destacouPorCtx.set(ctx, true);
         } finally {
           // SEMPRE apaga o destaque, mesmo se highlightNode falhou no meio —
-          // marca perdida na tela do Cezar e no screenshot e o defeito que
+          // marca perdida na tela do usuário e no screenshot e o defeito que
           // este `finally` existe para evitar (briefing, "o que NAO fazer").
           await dm.send(ctx.tabId, 'Overlay.hideHighlight').catch(() => {});
         }

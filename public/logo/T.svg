@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512"><title>PraxedesIA</title><defs>
+<linearGradient id="g" gradientUnits="userSpaceOnUse" x1="0" y1="374" x2="0" y2="112">
+<stop offset="0" stop-color="#ff7a00"/><stop offset="1" stop-color="#ffb347"/></linearGradient>
+<filter id="blur2" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="8"/></filter>
+</defs><rect width="512" height="512" rx="112" fill="#1b1c20"/><g transform="translate(0,-26.0)"><path d="M152,344 V200 H120 A32,32 0 0 0 120,264 H152 M360,344 V200 H392 A32,32 0 0 1 392,264 H360" fill="none" stroke="url(#g)" stroke-width="14" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="8" /><path d="M64,339.7 H152" fill="none" stroke="url(#g)" stroke-width="8.68" stroke-linecap="round" stroke-linejoin="miter" stroke-miterlimit="8" /><path d="M360,339.7 H448" fill="none" stroke="url(#g)" stroke-width="8.68" stroke-linecap="round" stroke-linejoin="miter" stroke-miterlimit="8" />
+<path d="M152.00,264.00 A116.50,116.50 0 0 1 360.00,264.00" fill="none" stroke="url(#g)" stroke-width="14" stroke-linecap="round" stroke-linejoin="miter" stroke-miterlimit="8" />
+<path d="M185.3,360 H326.7" fill="none" stroke="url(#g)" stroke-width="6.2496" stroke-linecap="round" stroke-linejoin="miter" stroke-miterlimit="8" opacity=".75"/>
+<path d="M218.6,376 H293.4" fill="none" stroke="url(#g)" stroke-width="4.536" stroke-linecap="round" stroke-linejoin="miter" stroke-miterlimit="8" opacity=".4"/>
+<path d="M152.00,264.00 A116.50,116.50 0 0 1 360.00,264.00" pathLength="100" fill="none" stroke="#fff1d6" stroke-width="13.3" stroke-linecap="round" stroke-dasharray="34 300" stroke-dashoffset="-30.00" opacity="0.22"/>
+<path d="M152.00,264.00 A116.50,116.50 0 0 1 360.00,264.00" pathLength="100" fill="none" stroke="#fff1d6" stroke-width="10.1" stroke-linecap="round" stroke-dasharray="20 300" stroke-dashoffset="-44.00" opacity="0.45"/>
+<path d="M152.00,264.00 A116.50,116.50 0 0 1 360.00,264.00" pathLength="100" fill="none" stroke="#fff1d6" stroke-width="6.3" stroke-linecap="round" stroke-dasharray="9 300" stroke-dashoffset="-55.00" opacity="0.95"/>
+<circle cx="291.4" cy="205.5" r="23.8" fill="#fff1d6" opacity=".5" filter="url(#blur2)"/>
+<circle cx="291.4" cy="205.5" r="5.9" fill="#fff"/></g></svg>

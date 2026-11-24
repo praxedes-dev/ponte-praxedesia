@@ -5,7 +5,7 @@ import { executarJs } from './js';
 
 /**
  * Download nativo (obra 08, docs/obra-20260904/08-abas-filhas-download-nativo-e-aba-do-usuario.md)
- * — PLANO C (06/09/2026, com autorizacao explicita do Dr. Cezar).
+ * — PLANO C (06/09/2026, com autorizacao explicita do usuário).
  *
  * Existe para o caso em que o Chrome baixa um arquivo SOZINHO — clique em
  * "Imprimir boletos" do PJe, um `<a download>`, um `blob:` gerado por JS —
@@ -32,13 +32,13 @@ import { executarJs } from './js';
  *    (FIFO), consumida no primeiro download que comecar depois do armar.
  *
  * 2. RISCO MEDIDO E ACEITO, nao escondido: como o gancho e global, um
- *    download que o PROPRIO Dr. Cezar disparar (ex.: na aba Jus IA) ENQUANTO
+ *    download que o PROPRIO usuário disparar (ex.: na aba Jus IA) ENQUANTO
  *    um agente estiver armado tambem entraria na fila e SERIA desviado para
  *    a pasta de staging da ponte. Mitigacao (nao eliminacao — a API nao da
  *    para eliminar): `TTL_ARMAR_MS` curto (a arma expira sozinha se nenhum
  *    download comecar) e consumo DE UM SO TIRO (a entrada sai da fila no
  *    instante em que e usada). Ver relatorio da obra para o texto exato desta
- *    ressalva — o Dr. Cezar/capataz decide se isso e aceitavel caso a caso.
+ *    ressalva — o usuário/capataz decide se isso e aceitavel caso a caso.
  *
  * 3. `chrome.downloads.onDeterminingFilename` so aceita `filename` RELATIVO
  *    a pasta de Downloads REAL do Chrome (path absoluto, vazio ou com ".." e
@@ -112,7 +112,7 @@ function nomeDoCabecalho(cd: string, url: string): string {
 }
 
 /**
- * CAPTURA NA RESPOSTA (23/09/2026, pedido do Dr. Cezar: a pergunta "onde
+ * CAPTURA NA RESPOSTA (23/09/2026, pedido do usuário: a pergunta "onde
  * salvar" fica para ele, nunca para o agente). Enquanto o download esta
  * ARMADO, a aba passa pelo dominio Fetch do CDP na fase de RESPOSTA: quando
  * chega um documento que e arquivo (Content-Disposition attachment, ou PDF/
@@ -153,7 +153,7 @@ async function armarCaptura(tabId: number, pasta: string): Promise<void> {
       if (!ligado || !ehArquivo) return seguir();
       // Daqui em diante e ARQUIVO. Se vier com defeito (vazio, cortado, corpo
       // ilegivel), NAO se devolve ao Chrome: ele abriria a janela "Salvar como"
-      // na tela do Dr. Cezar (aconteceu nas baterias de 30/09/2026). Aborta e
+      // na tela do usuário (aconteceu nas baterias de 30/09/2026). Aborta e
       // o browser_download_wait responde o motivo.
       const url0 = String((p.request as { url?: string } | undefined)?.url ?? '');
       const recusar = async (motivo: string) => {
@@ -184,7 +184,7 @@ async function armarCaptura(tabId: number, pasta: string): Promise<void> {
       const url = url0;
       capturadoPorTab.set(tabId, { pasta, nome: nomeDoCabecalho(cd, url), bytes, url, base64, sem_janela: true, via: 'resposta' });
       // O armado desta aba ja foi atendido: tira da fila global para nao
-      // desviar o proximo download do Dr. Cezar.
+      // desviar o proximo download do usuário.
       fila = fila.filter((a) => a.tabId !== tabId);
       await dm.send(tabId, 'Fetch.failRequest', { requestId, errorReason: 'Aborted' }).catch(() => {});
       desligar();
@@ -260,10 +260,13 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
   // (ver nota de risco no cabecalho do arquivo).
   const candidato = fila[0];
   if (!candidato) {
-    // Download que nao e nosso (ou nenhum armar pendente): nao mexe. Chamar
-    // suggest() sem argumento diz "use o nome que o Chrome ja sugeriu" —
-    // documentado pela propria API como o jeito de nao interferir.
-    suggest();
+    // Download que NAO e desta ponte (nenhum armar pendente): nao mexe em nada.
+    // NAO chamar suggest() e NAO devolver true — o listener retorna sem decidir e
+    // o Chrome (ou outra extensao) escolhe o nome. Chamar suggest() aqui, mesmo
+    // sem argumento, contava como decisao desta extensao: com duas pontes
+    // instaladas (v6 e v6.1 dev) o Chrome acusava "Falha ao nomear o download
+    // com esta extensao, porque outra extensao determinou um nome diferente" em
+    // TODO download, ate nos do proprio usuário (21/10/2026).
     return;
   }
 
@@ -280,7 +283,7 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
   };
   consumidoPorTab.set(candidato.tabId, consumo);
 
-  // SEM JANELA (23/09/2026, pedido do Dr. Cezar: a pergunta "onde salvar" fica
+  // SEM JANELA (23/09/2026, pedido do usuário: a pergunta "onde salvar" fica
   // para ele, nao para o agente). O Chrome so abre a janela DEPOIS que o nome
   // e decidido aqui, e a extensao nao le nem muda essa opcao. Entao segura a
   // decisao (return true + suggest depois), busca o mesmo arquivo pela aba e,
@@ -303,7 +306,7 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
       }
       consumo.porqueSemDesvio = d.porque;
       // blob: que nao deu para rebuscar: soltar para o Chrome abriria a janela
-      // "Salvar como" na tela do Dr. Cezar (a pergunta e dele, nao do agente).
+      // "Salvar como" na tela do usuário (a pergunta e dele, nao do agente).
       // Cancela e o esperar devolve o motivo.
       if (/^blob:/i.test(item.finalUrl || item.url || '')) {
         chrome.downloads.cancel(item.id).catch(() => {}).then(() => { try { suggest(); } catch { /* */ } });
@@ -360,20 +363,20 @@ function dicaPorEstado(item: chrome.downloads.DownloadItem | undefined): string 
       + 'esperando confirmacao manual ("Manter arquivo" em chrome://downloads) — isto NAO e timeout '
       + 'de rede nem defeito da ponte, e aprovacao pendente que nunca chega sozinha. Nao ha como a '
       + 'extensao aceitar isso no lugar do usuario sem `downloads.acceptDanger`, que ainda nao esta '
-      + 'implementado aqui de proposito (decide caso a caso com o Dr. Cezar antes de automatizar isto).'
+      + 'implementado aqui de proposito (decide caso a caso com o usuário antes de automatizar isto).'
     );
   }
   if (item.state === 'in_progress' && !item.filename) {
     // MEDIDO em 23/09/2026 (custas do TJ-RO): bytesReceived === totalBytes,
     // filename vazio, danger safe. O arquivo chegou inteiro e o Chrome nao
     // sabe ONDE gravar: esta com a janela "Salvar como" aberta. No perfil
-    // "1. Cezar" a opcao "Perguntar onde salvar cada arquivo" esta LIGADA
+    // do usuario a opcao "Perguntar onde salvar cada arquivo" esta LIGADA
     // (Preferences: download.prompt_for_download = true) e ela vence o
     // suggest() do onDeterminingFilename.
     return (
       ' CAUSA: o Chrome esta com a janela "Salvar como" ABERTA esperando alguem escolher a pasta '
       + '(opcao "Perguntar onde salvar cada arquivo" ligada em chrome://settings/downloads). Enquanto '
-      + 'ela estiver aberta nenhum outro download comeca. Peca ao Dr. Cezar para clicar em Salvar ou '
+      + 'ela estiver aberta nenhum outro download comeca. Peca ao usuário para clicar em Salvar ou '
       + 'Cancelar nessa janela; se o arquivo tiver URL direta, prefira browser_download (busca por '
       + 'fora, sem janela). Desligar a opcao e decisao dele, nao mude sozinho.'
     );
@@ -382,7 +385,7 @@ function dicaPorEstado(item: chrome.downloads.DownloadItem | undefined): string 
     return (
       ' HIPOTESE: download pausado sem receber nenhum byte — compativel com o Chrome estar esperando '
       + 'o dialogo nativo "Salvar como" (configuracao "Perguntar onde salvar cada arquivo antes de '
-      + 'fazer o download" LIGADA em chrome://settings/downloads). Isto e configuracao do Dr. Cezar — '
+      + 'fazer o download" LIGADA em chrome://settings/downloads). Isto e configuracao do usuário — '
       + 'NAO mude sozinho; confirme com ele antes.'
     );
   }
@@ -492,7 +495,8 @@ export const modulo: ModuloCapacidades = {
           pastaPedida: pasta,
           subpastaRelativa,
           quando: agora,
-          expiraEm: agora + TTL_ARMAR_MS,
+          // ttl_s (10/11/2026): "1080p Aprimorada" do Flow leva ~5 min ate o arquivo sair.
+          expiraEm: agora + Math.min(15 * 60_000, Math.max(TTL_ARMAR_MS, Number(ctx.params.ttl_s) * 1000 || 0)),
         });
 
         // Arquivo gerado por JS (blob:) — Gemini, 26/09/2026: a pagina cria o
@@ -559,7 +563,7 @@ export const modulo: ModuloCapacidades = {
             const pendentes = await chrome.downloads.search({ state: 'in_progress' });
             if (pendentes.some((d) => !d.filename)) {
               preso = ' ATENCAO: ha download parado sem nome de arquivo, sinal de janela "Salvar como" '
-                + 'aberta no Chrome esperando o Dr. Cezar (opcao "Perguntar onde salvar cada arquivo" '
+                + 'aberta no Chrome esperando o usuário (opcao "Perguntar onde salvar cada arquivo" '
                 + 'ligada). Enquanto ela estiver aberta o download novo nao comeca; peca a ele para '
                 + 'fechar essa janela.';
             }
@@ -610,7 +614,7 @@ export const modulo: ModuloCapacidades = {
         if (item.state === 'interrupted') {
           throw new Error(
             (consumo.porqueSemDesvio
-              ? `download cancelado pela ponte para a janela "Salvar como" nao abrir na tela do Dr. Cezar: ${consumo.porqueSemDesvio}. `
+              ? `download cancelado pela ponte para a janela "Salvar como" nao abrir na tela do usuário: ${consumo.porqueSemDesvio}. `
                 + 'Arquivo gerado por JS e ja descartado pela pagina; repita o clique logo depois do browser_download_arm. '
               : `download interrompido pelo Chrome: ${item.error ?? '(motivo desconhecido)'}. `)
             + descreverItem(item),

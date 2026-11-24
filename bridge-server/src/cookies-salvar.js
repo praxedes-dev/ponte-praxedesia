@@ -1,7 +1,7 @@
 /**
  * browser_cookies_salvar (07/10/2026, pedido do Estrelinha — HANDOFF-COOKIES-PARA-ARQUIVO-20261007.md).
  *
- * browser_cookies devolve os valores ao agente, e a sessão logada do Dr. Cezar ficaria no histórico
+ * browser_cookies devolve os valores ao agente, e a sessão logada do usuário ficaria no histórico
  * da conversa. Aqui os cookies vão da extensão direto para um ARQUIVO; o agente recebe só caminho,
  * quantidade e nomes.
  *

@@ -8,11 +8,16 @@ import { modulo as arquivos } from './arquivos';
 import { modulo as rede } from './rede';
 import { modulo as emulacao } from './emulacao';
 import { modulo as dialogo } from './dialogo';
+import { modulo as viewportGuarda } from './viewport-guarda';
+import { modulo as selectNativo } from './select-nativo';
+import { modulo as googleDocs } from './google-docs';
+import { modulo as decisao } from './decisao';
 
 // Stubs vazios, um por obra planejada (ver docs/obra-20260904/00-PLANO-DE-OBRA.md §3).
 // Cada pedreiro preenche o seu `capacidades` e, se precisar, `ganchos` — sem
 // tocar neste arquivo alem de existir aqui.
 import { modulo as desafio } from './desafio';
+import { modulo as esperaLogin } from './espera-login';
 import { modulo as auditoria } from './auditoria';
 import { modulo as uploadLote } from './upload-lote';
 import { modulo as formularioLote } from './formulario-lote';
@@ -32,6 +37,10 @@ import { modulo as consoleModulo } from './console';
 import { modulo as feedback } from './feedback';
 import { modulo as midia } from './midia';
 import { modulo as seletorArquivo } from './seletor-arquivo';
+// Por ultimo: o recibo (C1) olha o que assentar/confirmar ja deixaram para tras.
+import { modulo as recibo } from './recibo';
+// Ultimo: so contabiliza o que os outros modulos deixaram como resposta final.
+import { modulo as consumoPonte } from './consumo-ponte';
 
 /**
  * Registro central das capacidades da ponte.
@@ -52,7 +61,7 @@ import { modulo as seletorArquivo } from './seletor-arquivo';
  * `registrar()` throwing aqui, em escopo de modulo e sem try/catch, derrubava
  * o service worker inteiro no boot — um nome errado numa obra futura tirava a
  * ponte do ar para TODOS os agentes, e o caminho de conserto (reload pela
- * propria ponte) morria junto, sobrando so "o Dr. Cezar clicar em Recarregar".
+ * propria ponte) morria junto, sobrando so "o usuário clicar em Recarregar".
  *
  * Mantem o barulho (throw dentro de `registrar()`, log aqui) e tira o fatal:
  * um modulo que falha nao impede os outros de registrar nem a ponte de subir.
@@ -63,10 +72,10 @@ import { modulo as seletorArquivo } from './seletor-arquivo';
 export const errosDeRegistro: string[] = [];
 
 for (const modulo of [
-  js, formulario, clique, arquivos, rede, emulacao, dialogo,
-  desafio, auditoria, uploadLote, formularioLote, autocomplete, abasFilhas,
+  js, formulario, clique, arquivos, rede, emulacao, dialogo, viewportGuarda,
+  desafio, esperaLogin, auditoria, uploadLote, formularioLote, autocomplete, abasFilhas,
   downloadNativo, redeInspecao, historico, ritmo, destaque, assentar, confirmar,
-  screenshotRecorte, consoleModulo, feedback, midia, seletorArquivo,
+  screenshotRecorte, consoleModulo, feedback, midia, seletorArquivo, selectNativo, googleDocs, decisao, recibo, consumoPonte,
 ]) {
   try {
     registrar(modulo);

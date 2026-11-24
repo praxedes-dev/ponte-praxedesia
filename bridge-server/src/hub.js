@@ -1,8 +1,9 @@
 import { EventEmitter } from 'node:events';
 import { WebSocketServer, WebSocket } from 'ws';
+import { consumoDaMedicao, arquivarMedicao } from './consumo.js';
 
 export const HOST = '127.0.0.1';
-export const PORT = Number(process.env.PRAXEDES_BRIDGE_PORT || 8788);
+export const PORT = Number(process.env.PRAXEDES_BRIDGE_PORT || 8789);
 
 const HEARTBEAT_MS = 15_000;
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -44,6 +45,10 @@ export class BridgeLink extends EventEmitter {
     // Estado de peer
     this.upstream = null;
     this.reconnectTimer = null;
+
+    // OCIOSO (20/10/2026): processo adormecido -- sem socket, sem timers. `acordar()`
+    // religa. Enquanto true, nenhuma reeleicao automatica pode religar sozinha.
+    this.suspenso = false;
   }
 
   get connected() {
@@ -63,6 +68,7 @@ export class BridgeLink extends EventEmitter {
   }
 
   async start() {
+    this.suspenso = false;
     try {
       await this.#becomeHub();
     } catch (err) {
@@ -161,10 +167,15 @@ export class BridgeLink extends EventEmitter {
         extensionOnline: this.extensoes.size > 0,
         perfis: [...this.extensoes.keys()],
       }));
+      // Extensao nova recebe a lista; agente novo avisa as extensoes ja conectadas.
+      if (ws.role === 'extension') this.#enviarAgentes(ws);
+      else this.#avisarAgentes();
       ws.on('message', (data) => this.#onHubMessage(ws, data));
       ws.on('close', () => this.#onHubClose(ws));
     });
   }
+
+  #consumoCache = null;
 
   #onHubMessage(ws, raw) {
     let msg;
@@ -207,9 +218,30 @@ export class BridgeLink extends EventEmitter {
 
     if (ws.role !== 'extension') return;
 
+    // Painel da extensao pedindo o consumo agregado de medicao.jsonl (cache de 5 s: o painel pergunta de tempos em tempos).
+    if (msg.type === 'consumo') {
+      const agora = Date.now();
+      if (!this.#consumoCache || agora - this.#consumoCache.em > 5_000) {
+        let dados;
+        try { dados = consumoDaMedicao(); } catch (err) { dados = { erro: String(err?.message ?? err) }; }
+        this.#consumoCache = { em: agora, dados };
+      }
+      return ws.send(JSON.stringify({ type: 'consumo', id: msg.id, dados: this.#consumoCache.dados }));
+    }
+
+    // Botao "Zerar contadores" do painel: arquiva o medicao.jsonl com a data e recomeca vazio.
+    if (msg.type === 'zerar_consumo') {
+      let dados;
+      try { dados = { ok: true, ...arquivarMedicao() }; } catch (err) { dados = { ok: false, erro: String(err?.message ?? err) }; }
+      this.#consumoCache = null;
+      return ws.send(JSON.stringify({ type: 'zerar_consumo', id: msg.id, dados }));
+    }
+
     // Resposta da extensao: minha, ou de um agente que eu roteio.
-    if (msg.type === 'result') {
-      if (!msg.clientId || msg.clientId === this.clientId) return this.#settle(msg);
+    if (msg.type === 'result' || msg.type === 'prorrogar') {
+      if (!msg.clientId || msg.clientId === this.clientId) {
+        return msg.type === 'result' ? this.#settle(msg) : this.#prorrogar(msg);
+      }
       const peer = this.peers.get(msg.clientId);
       if (peer?.readyState === WebSocket.OPEN) peer.send(JSON.stringify(msg));
       return;
@@ -238,6 +270,7 @@ export class BridgeLink extends EventEmitter {
     if (ws.role === 'peer') {
       this.peers.delete(ws.clientId);
       this.emit('log', `agente saiu: ${ws.clientId}`);
+      this.#avisarAgentes();
       // Sem isto as abas do agente ficam orfas no Chrome. Manda para TODOS os
       // perfis conectados: o agente pode ter usado mais de um na sessao.
       for (const ext of this.extensoes.values()) {
@@ -246,6 +279,24 @@ export class BridgeLink extends EventEmitter {
         }));
       }
     }
+  }
+
+  /** Quem esta conectado a este hub: ele mesmo (tambem e um agente) e cada peer. */
+  #listaDeAgentes() {
+    return [
+      { clientId: this.clientId, name: this.name },
+      ...[...this.peers.values()].map((p) => ({ clientId: p.clientId, name: p.name })),
+    ];
+  }
+
+  #enviarAgentes(ext) {
+    if (ext.readyState !== WebSocket.OPEN) return;
+    ext.send(JSON.stringify({ type: 'peers', agentes: this.#listaDeAgentes() }));
+  }
+
+  /** Contagem de agentes para o icone/painel da extensao: so quando entra ou sai alguem. */
+  #avisarAgentes() {
+    for (const ext of this.extensoes.values()) this.#enviarAgentes(ext);
   }
 
   // --------------------------------------------------------------- peer
@@ -301,6 +352,7 @@ export class BridgeLink extends EventEmitter {
           return;
         }
         if (msg.type === 'result') this.#settle(msg);
+        else if (msg.type === 'prorrogar') this.#prorrogar(msg);
         else if (msg.type === 'push') this.emit('push', msg);
       });
 
@@ -321,11 +373,83 @@ export class BridgeLink extends EventEmitter {
    * disputarem a porta no mesmo instante e tenta assumir.
    */
   #scheduleReelection() {
+    if (this.suspenso) return;
     clearTimeout(this.reconnectTimer);
     const delay = 200 + Math.floor(Math.random() * 800);
     this.reconnectTimer = setTimeout(() => {
       this.start().catch(() => this.#scheduleReelection());
     }, delay);
+  }
+
+  // ------------------------------------------------------------ ocioso
+
+  /**
+   * Larga a conexao com o hub, os timers e (se for hub) a porta -- o processo MCP
+   * fica so com o esqueleto stdio. `acordar()` religa na proxima chamada.
+   *
+   * Nao suspende (devolve `{suspenso:false, motivo}`):
+   *  - com comando meu pendente (alguem espera resposta);
+   *  - sendo HUB com agentes conectados: derrubar a porta faz a extensao fechar as
+   *    abas de TODOS os agentes (ws.onclose -> encerrarTodos), inclusive de quem
+   *    esta trabalhando. O hub so solta a porta quando fica sozinho; os peers
+   *    ociosos soltam primeiro (cada um se desliga) e o hub solta na verificacao
+   *    seguinte.
+   */
+  async suspender() {
+    if (this.suspenso) return { suspenso: true, ja: true };
+    if (this.pending.size > 0) return { suspenso: false, motivo: 'comandos pendentes' };
+    if (this.role === 'hub' && this.peers.size > 0) {
+      return { suspenso: false, motivo: `hub com ${this.peers.size} agente(s) conectado(s)` };
+    }
+
+    this.suspenso = true;
+    const papel = this.role;
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    clearInterval(this.heartbeat);
+    this.heartbeat = null;
+
+    if (this.wss) {
+      const wss = this.wss;
+      this.wss = null;
+      for (const ws of wss.clients) { try { ws.terminate(); } catch { /* ja morto */ } }
+      await new Promise((resolve) => { wss.close(() => resolve()); });
+    }
+    if (this.upstream) {
+      const up = this.upstream;
+      this.upstream = null;
+      try { up.terminate(); } catch { /* ja morto */ }
+    }
+    this.extensoes.clear();
+    this.peers.clear();
+    this.role = null;
+    this.emit('log', `ocioso: larguei ${papel === 'hub' ? 'a porta e a extensao' : 'a conexao com o hub'}`);
+    return { suspenso: true, papel };
+  }
+
+  /** Religa depois de `suspender()`. Devolve true se estava adormecido. */
+  async acordar() {
+    if (!this.suspenso) return false;
+    await this.start();
+    return true;
+  }
+
+  /** Encerramento limpo (stdin fechou): solta a porta ou o socket sem agendar reeleicao. */
+  async parar() {
+    this.suspenso = true;
+    clearTimeout(this.reconnectTimer);
+    clearInterval(this.heartbeat);
+    if (this.wss) {
+      const wss = this.wss;
+      this.wss = null;
+      for (const ws of wss.clients) { try { ws.terminate(); } catch { /* ja morto */ } }
+      await new Promise((resolve) => { wss.close(() => resolve()); });
+    }
+    if (this.upstream) {
+      // close (nao terminate): o hub recebe o fechamento e libera as abas deste agente.
+      try { this.upstream.close(1000, 'processo encerrando'); } catch { /* ja morto */ }
+      this.upstream = null;
+    }
   }
 
   // ------------------------------------------------------------- comum
@@ -339,6 +463,17 @@ export class BridgeLink extends EventEmitter {
       }
     }, HEARTBEAT_MS);
     this.heartbeat.unref?.();
+  }
+
+  /**
+   * O comando esta na fila da janela da ponte esperando a vez (03/11/2026): a
+   * espera nao conta no prazo dele. Recomeca o relogio do zero.
+   */
+  #prorrogar(msg) {
+    const entry = this.pending.get(msg.id);
+    if (!entry?.estourar) return;
+    clearTimeout(entry.timer);
+    entry.timer = setTimeout(entry.estourar, entry.timeoutMs);
   }
 
   #settle(msg) {
@@ -370,7 +505,7 @@ export class BridgeLink extends EventEmitter {
    * quem conversa com a extensao e o hub.
    */
   async estado() {
-    const base = { papel: this.role, endereco: `ws://${HOST}:${PORT}`, pid: process.pid };
+    const base = { papel: this.role, endereco: `ws://${HOST}:${PORT}`, pid: process.pid, memoria_rss_mb: Math.round(process.memoryUsage().rss / 1048576) };
 
     if (this.role === 'hub') {
       return {
@@ -428,11 +563,12 @@ export class BridgeLink extends EventEmitter {
     }
 
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const estourar = () => {
         this.pending.delete(id);
         reject(new Error(`acao "${action}" estourou ${Math.round(timeoutMs / 1000)}s sem resposta`));
-      }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer, perfil });
+      };
+      const timer = setTimeout(estourar, timeoutMs);
+      this.pending.set(id, { resolve, reject, timer, perfil, estourar, timeoutMs });
     });
   }
 }

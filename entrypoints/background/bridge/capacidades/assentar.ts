@@ -1,6 +1,9 @@
 import { debuggerManager as dm } from '../../debugger-manager';
 import type { ContextoCapacidade, ModuloCapacidades, Resultado } from './registro';
 import { LONGA_MS } from '../../execution-engine/cdp-tools';
+import {
+  HOSTS_SO_DOM_PADRAO, avaliarAssentamento, criarAcompanhante, hostSoDom, lerContadorDeMutacoes,
+} from '../../execution-engine/assentamento';
 
 /**
  * Espera a rede acalmar DE VERDADE depois de um clique (ou Enter, ou
@@ -31,6 +34,13 @@ interface EstadoAssentar {
   /** `Date.now()` de quando este estado foi armado (`antes`) — base do teto e de `assentou_ms`. */
   armadoEm: number;
   offs: Array<() => void>;
+  /** v6.1 (c): mudancas de DOM vistas desde que armou (ver execution-engine/assentamento.ts). */
+  mutacoes: number;
+  ultimaMutacao: number;
+  /** Host de conexao viva (Gmail, WhatsApp Web): a rede e ignorada, so o DOM conta. */
+  soDom: boolean;
+  redeAssentouEm?: number;
+  sondarDom: () => Promise<void>;
 }
 
 /**
@@ -48,6 +58,8 @@ type ParamsDeCtx = Record<string, unknown>;
 type ParamsDeEvento = Record<string, unknown>;
 
 const QUIETO_MS = 400;
+/** Fase 4: o clique nao disparou pedido de rede nem navegacao -> 250 ms de silencio bastam. */
+const QUIETO_SEM_REDE_MS = 250;
 const TETO_PADRAO_MS = 2500;
 const PASSO_MS = 50;
 
@@ -66,12 +78,33 @@ function acaoRelevante(ctx: ContextoCapacidade): boolean {
  * `antes` (arma ANTES do clique real acontecer): senao perde as
  * requisicoes que o proprio clique dispara antes de o gancho registrar.
  */
+async function hostsSoDom(): Promise<string[]> {
+  try {
+    const { esperaSoDomHosts } = await chrome.storage.local.get('esperaSoDomHosts');
+    return Array.isArray(esperaSoDomHosts) ? (esperaSoDomHosts as string[]) : HOSTS_SO_DOM_PADRAO;
+  } catch {
+    return HOSTS_SO_DOM_PADRAO;
+  }
+}
+
 async function armar(tabId: number): Promise<EstadoAssentar> {
   const agora = Date.now();
+  const acompanhante = criarAcompanhante();
   const estado: EstadoAssentar = {
     emVoo: new Map(), navegou: false, carregou: false, requisicoes: 0,
     ultimaAtividade: agora, armadoEm: agora, offs: [],
+    mutacoes: 0, ultimaMutacao: agora, soDom: false,
+    sondarDom: async () => {
+      const n = await lerContadorDeMutacoes((metodo, params) => dm.send(tabId, metodo, params));
+      if (acompanhante.registrar(n)) { estado.mutacoes += 1; estado.ultimaMutacao = Date.now(); }
+    },
   };
+  try {
+    const url = (await chrome.tabs.get(tabId)).url;
+    estado.soDom = hostSoDom(url, await hostsSoDom());
+  } catch { /* sem aba: segue como pagina comum */ }
+  // Linha de base do contador ANTES do clique (o armar roda no `antes`).
+  await estado.sondarDom();
 
   // Frame principal da aba, para so contar `frameStartedLoading` dele — sem
   // isto, um iframe de propaganda recarregando faria `navegou` ficar preso
@@ -120,16 +153,20 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function esperarAssentar(
   estado: EstadoAssentar,
   teto: number,
-): Promise<{ assentou_ms: number; requisicoes: number; esgotou: boolean }> {
+): Promise<{ assentou_ms: number; requisicoes: number; esgotou: boolean; mutacoes: number }> {
   let esgotou = false;
   for (;;) {
+    await estado.sondarDom();
     const agora = Date.now();
     let recentes = 0;
     for (const t of estado.emVoo.values()) if (agora - t < LONGA_MS) recentes += 1;
-    const assentado = recentes === 0
-      && (!estado.navegou || estado.carregou)
-      && (agora - estado.ultimaAtividade) >= QUIETO_MS;
-    if (assentado) break;
+    const v = avaliarAssentamento({
+      agora, armadoEm: estado.armadoEm, emVooRecentes: recentes, navegou: estado.navegou, carregou: estado.carregou,
+      requisicoes: estado.requisicoes, ultimaAtividade: estado.ultimaAtividade,
+      mutacoes: estado.mutacoes, ultimaMutacao: estado.ultimaMutacao, redeAssentouEm: estado.redeAssentouEm,
+    }, { soDom: estado.soDom, quietoRedeMs: QUIETO_MS, quietoSemRedeMs: QUIETO_SEM_REDE_MS });
+    if (v.redeAssentou && estado.redeAssentouEm === undefined) estado.redeAssentouEm = agora;
+    if (v.assentou) break;
     if (agora - estado.armadoEm >= teto) { esgotou = true; break; }
     await sleep(PASSO_MS);
   }
@@ -140,6 +177,7 @@ async function esperarAssentar(
     assentou_ms: esgotou ? teto : Date.now() - estado.armadoEm,
     requisicoes: estado.requisicoes,
     esgotou,
+    mutacoes: estado.mutacoes,
   };
 }
 
@@ -184,7 +222,7 @@ export const modulo: ModuloCapacidades = {
       const tetoParam = params.esperar_ms as number | undefined;
       const teto = typeof tetoParam === 'number' && tetoParam > 0 ? tetoParam : TETO_PADRAO_MS;
 
-      const { assentou_ms, requisicoes, esgotou } = await esperarAssentar(estado, teto);
+      const { assentou_ms, requisicoes, esgotou, mutacoes } = await esperarAssentar(estado, teto);
 
       return {
         ...r,
@@ -192,6 +230,7 @@ export const modulo: ModuloCapacidades = {
           ...embrulhar(r.data),
           assentou_ms,
           requisicoes,
+          ...(mutacoes > 0 ? { dom_mudou: mutacoes } : {}),
           ...(esgotou ? { esgotou: true } : {}),
         },
       };

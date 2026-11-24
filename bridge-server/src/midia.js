@@ -1,5 +1,5 @@
 /**
- * browser_baixar_midia (26/09/2026, pedido do Dr. Cezar).
+ * browser_baixar_midia (26/09/2026, pedido do usuário).
  *
  * O "motor" das extensoes de baixar do Behance, Instagram, YouTube etc. ja
  * existe pronto e mantido pela comunidade: o yt-dlp (video) e o gallery-dl
@@ -16,8 +16,20 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync, rmSync, renameSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join, extname, basename } from 'node:path';
+import { join, extname, basename, delimiter } from 'node:path';
 import { randomUUID } from 'node:crypto';
+
+/**
+ * Pasta do ffmpeg para o yt-dlp juntar video e audio (02/11/2026: saiu o caminho
+ * fixo de C:\Program Filesfmpeg). Procura no PATH que ESTE processo enxerga e,
+ * se nao achar (ponte subiu com PATH antigo), na pasta de atalhos do winget.
+ */
+function pastaDoFfmpeg() {
+  const pastas = (process.env.PATH || '').split(delimiter).filter(Boolean);
+  pastas.push(join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'Microsoft', 'WinGet', 'Links'));
+  return pastas.find((p) => existsSync(join(p, 'ffmpeg.exe'))) ?? null;
+}
+const argsFfmpeg = () => { const p = pastaDoFfmpeg(); return p ? ['--ffmpeg-location', p] : []; };
 
 // Sites em que o gallery-dl e o motor certo (imagem em alta; no Instagram e
 // no X ele traz tambem os videos do post).
@@ -69,7 +81,7 @@ export const MIDIA_TOOL = {
 };
 
 /**
- * ATUALIZACAO AUTOMATICA (pedido do Dr. Cezar, 26/09/2026). Site de video
+ * ATUALIZACAO AUTOMATICA (pedido do usuário, 26/09/2026). Site de video
  * muda toda semana e motor velho falha com "No video formats found". Uma vez
  * por dia, antes de baixar, atualiza os dois motores pelo pip (e assim que
  * estao instalados: o `yt-dlp -U` nao funciona em instalacao por pip). E se
@@ -177,7 +189,7 @@ async function motorYtDlp(url, pasta, cookies, limite, so) {
   const args = [
     '--cookies', cookies, '-P', pasta, '-o', '%(title).80B [%(id)s].%(ext)s',
     '--playlist-end', String(limite), '--no-mtime', '--windows-filenames',
-    '--merge-output-format', 'mp4', '--ffmpeg-location', 'C:\\Program Files\\ffmpeg\\bin',
+    '--merge-output-format', 'mp4', ...argsFfmpeg(),
     // YouTube exige decifrar a assinatura em JavaScript; sem runtime o yt-dlp
     // responde "No video formats found" (medido 26/09/2026). O Node ja esta no PC.
     '--js-runtimes', 'node',
@@ -190,7 +202,7 @@ async function motorYtDlp(url, pasta, cookies, limite, so) {
 
 async function motorPagina(send, pasta, contexto, limite, minPx, so, url, cookies) {
   // A pagina pedida nao e a da aba: leva a aba ate ela (aba propria do agente;
-  // na aba do Dr. Cezar sem permitir_acao a ponte recusa, como deve).
+  // na aba do usuário sem permitir_acao a ponte recusa, como deve).
   if (url !== contexto.urlAba) {
     await send('navigate', { params: { url } }, 60_000);
     await new Promise((r) => setTimeout(r, 4000));
@@ -219,7 +231,7 @@ async function motorPagina(send, pasta, contexto, limite, minPx, so, url, cookie
       const r = await rodar('yt-dlp', [
         '--cookies', cookies, '--referer', contexto.urlAba, '-P', pasta,
         '-o', `video-${String(k).padStart(2, '0')}.%(ext)s`, '--no-mtime',
-        '--merge-output-format', 'mp4', '--ffmpeg-location', 'C:\\Program Files\\ffmpeg\\bin',
+        '--merge-output-format', 'mp4', ...argsFfmpeg(),
         '-f', 'bv*+ba/b', s,
       ], 20 * 60_000);
       if (r.codigo === 0) streams += 1;

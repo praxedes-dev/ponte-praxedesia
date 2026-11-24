@@ -1,5 +1,7 @@
 import { debuggerManager as dm } from '../../debugger-manager';
 import { cdpClick } from '../../execution-engine/cdp-tools';
+import { esperarCondicao } from '../../execution-engine/espera-condicao';
+import { observarRede } from '../../execution-engine/rede-observada';
 import { resolverAlvoDaAcao } from '../../execution-engine';
 import { avaliar } from '../policy';
 import { executarJs } from './js';
@@ -203,7 +205,7 @@ async function executarAutocomplete(ctx: ContextoCapacidade): Promise<unknown> {
     marcarVistos(candidatos);
     escolhida = escolherMelhorCandidato(candidatos, escolher);
     if (escolhida) break;
-    await new Promise((r) => setTimeout(r, 250));
+    await new Promise((r) => setTimeout(r, 60)); // V1: era 250 ms entre leituras da lista
   } while (Date.now() < prazo);
 
   if (!escolhida) {
@@ -252,8 +254,26 @@ async function executarAutocomplete(ctx: ContextoCapacidade): Promise<unknown> {
     );
   }
 
-  await cdpClick(tabId, escolhida.x, escolhida.y);
-  await new Promise((r) => setTimeout(r, 300));
+  // V1: era 300 ms parados depois do clique. Agora: o campo MUDOU do que foi digitado,
+  // ficou igual em duas leituras seguidas (50 ms) E a selecao nao deixou pedido de
+  // rede em voo (o `onselect` do RichFaces dispara AJAX que re-renderiza o campo;
+  // com ele, espera terminar, ate 2,5 s). Sem pedido nenhum, teto de 300 ms como
+  // antes. Se a selecao nao pegou, a leitura e o erro abaixo continuam iguais.
+  const rede = observarRede(tabId);
+  try {
+    await cdpClick(tabId, escolhida.x, escolhida.y);
+    let anteriorLido: string | null = null;
+    const inicioEspera = Date.now();
+    await esperarCondicao(async () => {
+      const v = await lerValorDoElemento(tabId, campo);
+      const pegou = !!v && v !== texto && v === anteriorLido;
+      anteriorLido = v;
+      if (!pegou) return false;
+      return rede.viu() === 0 || rede.quieta(100) || Date.now() - inicioEspera >= 2500;
+    }, { intervaloMs: 50, tetoMs: 2500 });
+  } finally {
+    rede.parar();
+  }
   const lido = await lerValorDoElemento(tabId, campo);
 
   // O PJe quase nunca da erro: aceita o valor errado e segue. A leitura de

@@ -1,24 +1,28 @@
 @import "tailwindcss";
 
-/* ── OKLCH Color System — blue-tinted dark theme ── */
+/* ── Tema laranja/âmbar sobre escuro (mesma família da borda do indicador) ── */
 :root {
-  --primary:          oklch(62% .20 232);
-  --primary-hover:    oklch(68% .22 232);
-  --primary-glow:     oklch(62% .20 232 / .35);
-  --primary-dim:      oklch(50% .14 232);
-  --primary-subtle:   oklch(62% .20 232 / .10);
+  --primary:          #ff7a00;
+  --primary-hover:    #ff9f1c;
+  --primary-glow:     rgb(255 122 0 / .35);
+  --primary-dim:      #b85600;
+  --primary-subtle:   rgb(255 122 0 / .10);
+  --amber:            #ffb347;
 
-  --surface:          oklch(17% .018 240);
-  --surface-elevated: oklch(21% .016 238);
-  --surface-high:     oklch(25% .014 236);
-  --surface-modal:    oklch(19% .017 239);
+  --surface:          #120e08;
+  --surface-elevated: #1a140c;
+  --surface-high:     #251c11;
+  --surface-modal:    #16110a;
 
-  --border:           oklch(33% .016 238);
-  --border-subtle:    oklch(27% .013 238);
+  --border:           #46341d;
+  --border-subtle:    #2e2314;
 
-  --text:             oklch(96% .005 240);
-  --text-secondary:   oklch(65% .012 238);
-  --text-muted:       oklch(42% .010 238);
+  --text:             #f7efe3;
+  --text-secondary:   #cdbba2;
+  --text-muted:       #8f7e66;
+
+  --ok:               #5fd38d;
+  --perigo:           #ef4444;
 }
 
 * { box-sizing: border-box; }
@@ -47,13 +51,13 @@ body {
 
 /* ── Glassmorphism ── */
 .glass {
-  background: oklch(21% .016 238 / .80) !important;
+  background: rgb(26 20 12 / .80) !important;
   backdrop-filter: blur(14px) saturate(1.6);
   -webkit-backdrop-filter: blur(14px) saturate(1.6);
 }
 
 .glass-modal {
-  background: oklch(19% .017 239 / .92) !important;
+  background: rgb(22 17 10 / .92) !important;
   backdrop-filter: blur(20px) saturate(1.8);
   -webkit-backdrop-filter: blur(20px) saturate(1.8);
 }
@@ -81,7 +85,7 @@ body {
     transparent        0%,
     var(--primary-dim) 18%,
     var(--primary)     32%,
-    oklch(72% .24 218) 48%,
+    var(--amber)       48%,
     var(--primary)     64%,
     var(--primary-dim) 78%,
     transparent       100%
@@ -96,7 +100,7 @@ body {
 
 /* ── Header bottom glow (subtle depth) ── */
 .header-glow {
-  box-shadow: 0 1px 0 0 var(--border-subtle), 0 4px 16px -4px oklch(62% .20 232 / .12);
+  box-shadow: 0 1px 0 0 var(--border-subtle), 0 4px 16px -4px rgb(255 122 0 / .12);
 }
 
 /* ── Card depth ── */
@@ -104,10 +108,35 @@ body {
   background: var(--surface-elevated);
   border: 1px solid var(--border-subtle);
   border-radius: 0.5rem;
-  box-shadow: 0 2px 8px -2px oklch(0% 0 0 / .4), 0 0 0 1px oklch(100% 0 0 / .03);
+  box-shadow: 0 2px 8px -2px rgb(0 0 0 / .45), 0 0 0 1px rgb(255 255 255 / .03);
 }
 
 /* ── Status badge glow ── */
 .status-executing {
-  box-shadow: 0 0 8px oklch(62% .20 232 / .5);
+  box-shadow: 0 0 8px rgb(255 122 0 / .5);
 }
+
+/* ── Botão "Parar tudo" ── */
+.btn-parar {
+  width: 100%;
+  border: 1px solid #7f1d1d;
+  border-radius: 0.6rem;
+  background: #2a0f0d;
+  color: #fecaca;
+  font-weight: 700;
+  font-size: 0.95rem;
+  letter-spacing: .02em;
+  padding: 0.85rem 0.75rem;
+  cursor: pointer;
+  transition: background .15s, border-color .15s, transform .05s;
+}
+.btn-parar:hover { background: #3b1311; border-color: var(--perigo); }
+.btn-parar:active { transform: scale(.99); }
+.btn-parar[data-armado="true"] {
+  background: var(--perigo);
+  border-color: #fca5a5;
+  color: #fff;
+  animation: pulsar 0.9s ease-in-out infinite;
+}
+@keyframes pulsar { 50% { box-shadow: 0 0 0 4px rgb(239 68 68 / .35); } }
+@media (prefers-reduced-motion: reduce) { .btn-parar[data-armado="true"] { animation: none; } }

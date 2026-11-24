@@ -1,7 +1,7 @@
 /**
  * browser_upload_por_clique (30/09/2026). Sobe arquivos em site cujo campo de
  * arquivo so nasce no clique de "Enviar" (Google Flow, Gemini, Drive), SEM a
- * janela do Windows abrir na tela do Dr. Cezar: a extensao pede ao Chrome
+ * janela do Windows abrir na tela do usuário: a extensao pede ao Chrome
  * para interceptar o seletor de arquivo, o clique passa pelo freio de sempre
  * (browser_click) e os arquivos vao direto no campo que o site abriu.
  */

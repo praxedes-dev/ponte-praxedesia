@@ -1,5 +1,5 @@
 /**
- * browser_transcricao_youtube (17/10/2026, pedido do Dr. Cezar).
+ * browser_transcricao_youtube (17/10/2026, pedido do usuário).
  *
  * Pega a transcrição que o próprio YouTube mostra em "Mostrar transcrição", na aba DO AGENTE (ou na
  * `aba` passada — cada subagente na sua). Não usa API nem baixa áudio: abre o painel e lê o texto.
