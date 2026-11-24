@@ -4,7 +4,7 @@
  * custava de 5 a 12 chamadas, passando pelas MESMAS tools de sempre
  * (rodarTool: freio, somente leitura, aba explicita).
  *
- * Mapa da tela aferido em 30/09/2026 (projeto de testes da6f374e...):
+ * Mapa da tela aferido em 30/09/2026 (num projeto de testes):
  * - grade: <img data-media-id="<uuid>">, ordem = mais recente primeiro;
  * - editor: /project/<p>/edit/<media-id> abre direto; "Baixar midia" (aria);
  *   imagem GERADA abre menu 1K / 2K Aprimorada / 4K (4K bloqueado no Pro);
