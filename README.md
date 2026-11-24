@@ -142,6 +142,8 @@ Pronto. Peça de novo e o Claude vai abrir uma janela da ponte e trabalhar nela.
 - O Claude só vê o que está logado **no seu Chrome**. Entre no Flow (ou em qualquer site)
   uma vez, normalmente, antes de pedir.
 - Downloads caem na pasta Downloads do Chrome.
+- O **2K** de uma imagem recém-gerada às vezes ainda não está pronto no Flow. Se o
+  `browser_flow_baixar` disser que nenhum download começou, espere um minuto e peça de novo.
 - Algo travou? Peça ao Claude `browser_status`: ele mostra se a extensão está conectada.
 
 ## Avisos
